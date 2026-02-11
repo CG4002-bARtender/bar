@@ -48,7 +48,12 @@ namespace config
   constexpr const char* MQTT_CLIENT_ID = "esp32_glove";
   constexpr const char* MQTT_TOPIC = "glove";
   constexpr int         MQTT_PUBLISH_INTERVAL_MS = 2000;
-  constexpr size_t      MQTT_CHUNK_SIZE = 1024;
+  constexpr size_t      MQTT_CHUNK_SIZE = 1100;
   constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
   constexpr size_t      MQTT_QUEUE_SIZE = 40;
+
+  // Audio MQTT protocol
+  constexpr const char* MQTT_AUDIO_TOPIC = "glove/audio";
+  constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024;
+  constexpr uint16_t    FRAGMENT_SENTINEL = 0xFFFF;
 }
