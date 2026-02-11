@@ -50,5 +50,5 @@ namespace config
   constexpr int         MQTT_PUBLISH_INTERVAL_MS = 2000;
   constexpr size_t      MQTT_CHUNK_SIZE = 1024;
   constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
-  constexpr size_t      MQTT_QUEUE_SIZE = 40 * 1024;
+  constexpr size_t      MQTT_QUEUE_SIZE = 40;
 }
