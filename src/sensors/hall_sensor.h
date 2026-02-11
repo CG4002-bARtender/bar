@@ -12,6 +12,8 @@ public:
   void read() override;
   void print() override;
 
+  int getOffset(size_t i) const { return offsetValues[i]; }
+
 private:
   void calibrate();
 

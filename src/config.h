@@ -35,6 +35,7 @@ namespace config
   constexpr int         HALL_INTERVAL_MS = 33;
   constexpr int         HALL_CALIBRATION_LEN = 30;
   constexpr int         HALL_CALIBRATION_DELAY = 200;
+  constexpr int         HALL_THRESHOLD = 150;
 
   // WiFi config
   constexpr const char* WIFI_SSID = "Medea";
@@ -56,4 +57,8 @@ namespace config
   constexpr const char* MQTT_AUDIO_TOPIC = "glove/audio";
   constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024;
   constexpr uint16_t    FRAGMENT_SENTINEL = 0xFFFF;
+
+  // Hall MQTT protocol
+  constexpr const char* MQTT_HALL_TOPIC = "glove/hall";
+  constexpr int         MQTT_HALL_PUBLISH_INTERVAL_MS = 2000;
 }
