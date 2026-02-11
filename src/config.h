@@ -24,8 +24,14 @@ namespace config
 
   // Button config
   constexpr int BUTTON_PIN = 26;
+  
   constexpr int BUTTON_INTERVAL_MS = 33;
 
-  // Wifi config
+  // Hall config
+  constexpr int HALL_PINS[] = {A0, A1, A2, A3, A4 };
+  constexpr size_t HALL_PINS_LEN = sizeof(HALL_PINS) / sizeof(HALL_PINS[0]);
 
+  constexpr int HALL_INTERVAL_MS = 1000;
+  constexpr int HALL_CALIBRATION_LEN = 30;
+  constexpr int HALL_CALIBRATION_DELAY = 200;
 }
