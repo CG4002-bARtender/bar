@@ -21,4 +21,11 @@ namespace config
   constexpr int MIC_SAMPLE_BATCH_SIZE = 64;
   constexpr int MIC_DMA_BUFFER_COUNT = 4;
   constexpr int MIC_DMA_BUFFER_LEN = 1024;
+
+  // Button config
+  constexpr int BUTTON_PIN = 26;
+  constexpr int BUTTON_INTERVAL_MS = 33;
+
+  // Wifi config
+
 }
