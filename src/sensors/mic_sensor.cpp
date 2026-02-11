@@ -1,6 +1,6 @@
 #include "mic_sensor.h"
 
-MicSensor::MicSensor() : Sensor(config::MIC_INTERVAL_MS), samples(), numBytesRead(0) {}
+MicSensor::MicSensor() : samples(), numBytesRead(0) {}
 
 MicSensor::~MicSensor()
 {

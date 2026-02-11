@@ -15,7 +15,7 @@ MqttClient::MqttClient(const char* broker, int port, const char* clientId, unsig
       messageCount(0)
 {
   wifiClient.setInsecure(); // TODO: load CA cert via setCACert() for production
-  mqttClient.setBufferSize(config::MQTT_MAX_PACKET_SIZE);
+  mqttClient.setBufferSize(config::MQTT_CHUNK_SIZE);
   mqttClient.setServer(broker, port);
 }
 

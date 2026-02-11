@@ -15,11 +15,6 @@ void setup()
 
 void loop()
 {
-  unsigned long now = millis();
-
-  if (micSensor.shouldRead(now))
-  {
-    micSensor.read();
-    micSensor.print();
-  }
+  micSensor.read();
+  micSensor.print();
 }

@@ -1,18 +1,18 @@
 #include "button_sensor.h"
 
 ButtonSensor::ButtonSensor()
-    : Sensor(config::BUTTON_INTERVAL_MS),
+    : Sensor(config::RECORDING_BUTTON_INTERVAL_MS),
       lastReading(HIGH),
       pressed(false) {}
 
 void ButtonSensor::setup()
 {
-  pinMode(config::BUTTON_PIN, INPUT_PULLUP);
+  pinMode(config::RECORDING_BUTTON_PIN, INPUT_PULLUP);
 }
 
 void ButtonSensor::read()
 {
-  bool reading = digitalRead(config::BUTTON_PIN);
+  bool reading = digitalRead(config::RECORDING_BUTTON_PIN);
 
   if (lastReading == HIGH && reading == LOW)
   {

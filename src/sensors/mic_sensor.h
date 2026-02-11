@@ -5,15 +5,15 @@
 #include "sensor.h"
 #include "../config.h"
 
-class MicSensor : public Sensor
+class MicSensor 
 {
 public:
   MicSensor();
   ~MicSensor();
 
-  void setup() override;
-  void read() override;
-  void print() override;
+  void setup();
+  void read();
+  void print();
 
 private:
   int32_t samples[config::MIC_SAMPLE_BATCH_SIZE];
