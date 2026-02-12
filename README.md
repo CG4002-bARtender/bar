@@ -9,17 +9,18 @@ Firmware for the Firebeetle ESP32-E embedded in the sensor bar, part of a larger
 - Digital I2S microphone for capturing voice audio
 - Samples at 16kHz, 32-bit, mono (left channel)
 - Connected via I2S bus (SCK=14, WS=17, SD=27)
-- Reads in batches of 64 samples every 20ms
+- Reads in batches of 512 samples during recording
 
 **Push Button**
 - Momentary push button on pin 26 with internal pull-up
-- Polled at ~30Hz for falling-edge detection
+- Polled at ~30Hz (33ms interval) for falling-edge detection
 - Acts as the recording trigger (push-to-talk toggle)
 
 **Hall Effect Sensors x5**
 - Five analog hall effect sensors on pins A0-A4
 - Detect magnetic force/proximity
 - Calibrated on startup by averaging 30 baseline readings per sensor
+- Polled at ~30Hz (33ms interval)
 - Report offset values (current reading minus baseline)
 
 ### Actuation
@@ -29,55 +30,69 @@ Firmware for the Firebeetle ESP32-E embedded in the sensor bar, part of a larger
 
 **Hall LEDs x5**
 - One LED per hall sensor
-- Lights up when its corresponding sensor detects a magnetic force above a threshold
+- The LED corresponding to the closest (strongest) hall sensor lights up; all others are off
 
 ### Communication
 
 **MQTT over TLS**
 - WiFi + TLS MQTT connection to EMQX Cloud broker (port 8883)
-- Streams mic audio data to a remote server during recording
-- Uses PubSubClient with ArduinoJson for structured messages
+- Two topics:
+  - `glove/audio` — binary audio fragments streamed during recording
+  - `glove/hall` — JSON with the index of the strongest hall sensor
+- Uses PubSubClient with WiFiClientSecure
 
 ## Architecture
 
-### Main Loop
+### Dual-Core Design (FreeRTOS)
+
+**Core 1** runs `setup()` and `loop()` — polls sensors and drives the state machine.
+**Core 0** runs two MQTT publish tasks that drain FreeRTOS queues.
+
+The cores communicate via queues (`audioQueue`, `hallQueue`) and share the MQTT client behind a mutex.
+
+### Core 1: Main Loop
 
 ```
-+---------------------------------------------+
-|                  Main Loop                   |
-|                                              |
-|  1. Poll button (30Hz)                       |
-|     +- press detected? -> toggle record state|
-|                                              |
-|  2. Check record state                       |
-|     +- IF recording:                         |
-|     |   +- Read mic samples (20ms batches)   |
-|     |   +- Stream samples over MQTT          |
-|     |   +- Check elapsed time >= 3s?         |
-|     |   |   +- YES -> stop recording         |
-|     |   +- Set recording LED HIGH            |
-|     +- ELSE:                                 |
-|     |   +- Set recording LED LOW             |
-|     |                                        |
-|  3. Poll hall sensors (1Hz)                  |
-|     +- For each of 5 sensors:                |
-|         +- |offset| > threshold? -> LED HIGH |
-|         +- otherwise             -> LED LOW  |
-|                                              |
-|  4. mqttClient.loop() (keepalive/reconnect)  |
-+---------------------------------------------+
++---------------------------------------------------+
+|                    Main Loop                       |
+|                                                    |
+|  1. Poll button (~30Hz)                            |
+|     +- press detected? -> advance state machine    |
+|                                                    |
+|  2. State machine (see below)                      |
+|                                                    |
+|  3. Poll hall sensors (~30Hz)                      |
+|     +- Find closest (strongest) sensor             |
+|     +- Light its LED, turn off the rest            |
+|     +- Overwrite hallQueue with closest index      |
++---------------------------------------------------+
 ```
 
-### State Machine (Recording)
+### Core 0: MQTT Tasks
+
+```
++----------------------------------------------+
+| hallPublishTask (priority 2)                 |
+|   +- Take mutex, call mqtt.loop()           |
+|   +- If hallQueue has data, publish JSON     |
+|   +- Release mutex, sleep 2s                |
++----------------------------------------------+
+| audioPublishTask (priority 1)                |
+|   +- Block on audioQueue                     |
+|   +- Take mutex, drain + publish all frags   |
+|   +- Release mutex                           |
++----------------------------------------------+
+```
+
+### State Machine
 
 ```
         button press              button press OR 3s elapsed
-IDLE --------------------> RECORDING ---------------------------> IDLE
-                           (mic read + MQTT stream + LED on)
+IDLE --------------------> RECORDING ---------------------------> END --> IDLE
+                           (mic read + enqueue fragments)    (enqueue sentinel,
+                                                              LED off)
 ```
 
-### Sensor-Algorithm-Actuation Loop
-
-- **Sensor**: Raw readings from button, mic, and hall effect sensors
-- **Algorithm**: State management (recording toggle, 3s timeout, hall threshold comparison)
-- **Actuation**: LEDs reflect current state, MQTT streams voice data to the remote server
+- **IDLE**: LED off. Waits for button press, then assigns a new `messageId` and turns LED on.
+- **RECORDING**: Reads mic samples, splits them into 1024-byte chunks, prepends a 4-byte header (`messageId` + `fragmentId`, little-endian), and enqueues each fragment.
+- **END**: Enqueues a sentinel fragment (`fragId = 0xFFFF`, no audio payload) to signal end-of-session, turns LED off, returns to IDLE.

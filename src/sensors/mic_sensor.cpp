@@ -1,6 +1,6 @@
 #include "mic_sensor.h"
 
-MicSensor::MicSensor() : samples(), numBytesRead(0) {}
+MicSensor::MicSensor() : samples(), samples16(), numBytesRead(0), numBytes16(0) {}
 
 MicSensor::~MicSensor()
 {
@@ -33,10 +33,10 @@ void MicSensor::setup()
     esp_err_t err;
     
     err = i2s_driver_install(I2S_NUM_0, &i2sConfig, 0, NULL);
-    Serial.printf("I2S driver install: %s\n", err == ESP_OK ? "OK" : "FAILED");
+    DEBUG_PRINTF("I2S driver install: %s\n", err == ESP_OK ? "OK" : "FAILED");
 
     err = i2s_set_pin(I2S_NUM_0, &pinConfig);
-    Serial.printf("I2S pin config: %s\n", err == ESP_OK ? "OK" : "FAILED");
+    DEBUG_PRINTF("I2S pin config: %s\n", err == ESP_OK ? "OK" : "FAILED");
 }
 
 void MicSensor::read()
@@ -44,8 +44,26 @@ void MicSensor::read()
   esp_err_t err = i2s_read(I2S_NUM_0, &samples, sizeof(samples), &numBytesRead, 1000);
   if (err != ESP_OK) {
     numBytesRead = 0;
-    Serial.printf("Failed to read!");
+    numBytes16 = 0;
+    DEBUG_PRINTF("Failed to read!");
+    return;
   }
+
+  // Convert 32-bit → 16-bit: keep top 16 of the 24 real bits from INMP441
+  size_t numSamples = numBytesRead / sizeof(int32_t);
+  for (size_t i = 0; i < numSamples; i++)
+  {
+    samples16[i] = (int16_t)(samples[i] >> 16);
+  }
+  numBytes16 = numSamples * sizeof(int16_t);
+}
+
+void MicSensor::flush()
+{
+  size_t discarded;
+  while (i2s_read(I2S_NUM_0, samples, sizeof(samples), &discarded, 0) == ESP_OK && discarded > 0);
+  numBytesRead = 0;
+  numBytes16 = 0;
 }
 
 void MicSensor::print()

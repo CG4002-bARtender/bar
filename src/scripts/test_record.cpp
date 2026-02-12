@@ -86,7 +86,7 @@ static void handleRecording(unsigned long now)
   }
 }
 
-static void handleSentinel()
+static void handleEnd()
 {
   size_t packetLen = packFragment(txBuffer, messageId, config::FRAGMENT_SENTINEL, nullptr, 0);
 
@@ -138,7 +138,7 @@ void loop()
     handleRecording(now);
     break;
   case State::SENDING_SENTINEL:
-    handleSentinel();
+    handleEnd();
     break;
   }
 }

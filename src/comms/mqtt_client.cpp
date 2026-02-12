@@ -34,7 +34,7 @@ void MqttClient::loop()
 {
   if (!isConnected())
   {
-    Serial.println("MQTT disconnected. Reconnecting...");
+    DEBUG_PRINTLN("MQTT disconnected. Reconnecting...");
     connectMqtt();
   }
   mqttClient.loop();
@@ -66,40 +66,40 @@ bool MqttClient::publish(const char* topic, const uint8_t* payload, unsigned int
 {
   if (!isConnected())
   {
-    Serial.println("Cannot publish: not connected");
+    DEBUG_PRINTLN("Cannot publish: not connected");
     return false;
   }
 
   bool success = mqttClient.publish(topic, payload, length);
   if (!success)
   {
-    Serial.println("Publish failed");
+    DEBUG_PRINTLN("Publish failed");
     return false;
   }
 
-  Serial.printf("Published to %s (%u bytes)\n", topic, length);
+  DEBUG_PRINTF("Published to %s (%u bytes)\n", topic, length);
   messageCount++;
   return true;
 }
 
 void MqttClient::connectWifi(const char* ssid, const char* password)
 {
-  Serial.printf("Connecting to WiFi: %s\n", ssid);
+  DEBUG_PRINTF("Connecting to WiFi: %s\n", ssid);
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
-    Serial.println("Failed to connect to WiFi. Attempting to reconnect...");
+    DEBUG_PRINTLN("Failed to connect to WiFi. Attempting to reconnect...");
   }
 
-  Serial.println();
-  Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+  DEBUG_PRINTLN();
+  DEBUG_PRINTF("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
 bool MqttClient::connectMqtt()
 {
-  Serial.printf("Connecting to MQTT: %s:%d\n", broker, port);
+  DEBUG_PRINTF("Connecting to MQTT: %s:%d\n", broker, port);
 
   bool success;
   if (username != nullptr && password != nullptr)
@@ -113,10 +113,10 @@ bool MqttClient::connectMqtt()
 
   if (!success)
   {
-    Serial.printf("MQTT connect failed, state=%d\n", mqttClient.state());
+    DEBUG_PRINTF("MQTT connect failed, state=%d\n", mqttClient.state());
     return false;
   }
 
-  Serial.println("MQTT connected!");
+  DEBUG_PRINTLN("MQTT connected!");
   return true;
 }
