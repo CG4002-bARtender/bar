@@ -127,14 +127,13 @@ static void handleSentinel()
 
 static void actuateHallLeds()
 {
+  int closestHall = hall.getClosestHall();
+  
   for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; i++)
   {
-    if (abs(hall.getOffset(i)) > config::HALL_THRESHOLD)
-    {
+    if (i == closestHall) {
       digitalWrite(config::HALL_LED_PINS[i], HIGH);
-    }
-    else
-    {
+    } else {
       digitalWrite(config::HALL_LED_PINS[i], LOW);
     }
   }
@@ -149,22 +148,10 @@ static void enqueueStrongestHall(unsigned long now)
   if (now - lastHallPublishMs < config::MQTT_HALL_PUBLISH_INTERVAL_MS) return;
   lastHallPublishMs = now;
 
-  int8_t strongestIdx = -1;
-  int strongestVal = config::HALL_THRESHOLD;
+  int8_t idx = hall.getClosestHall();
+  if (idx < 0) return;
 
-  for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; i++)
-  {
-    int absOffset = abs(hall.getOffset(i));
-    if (absOffset > strongestVal)
-    {
-      strongestVal = absOffset;
-      strongestIdx = i;
-    }
-  }
-
-  if (strongestIdx < 0) return;
-
-  if (xQueueSend(hallQueue, &strongestIdx, 0) != pdPASS)
+  if (xQueueSend(hallQueue, &idx, 0) != pdPASS)
   {
     Serial.println("Hall queue full, dropped");
   }
