@@ -7,8 +7,8 @@ MicSensor micSensor;
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
-  Serial.println("\n\n=== INMP441 Connection Test ===\n");
+  DEBUG_INIT();  
+  DEBUG_PRINTLN("\n\n=== INMP441 Connection Test ===\n");
 
   micSensor.setup();
 }

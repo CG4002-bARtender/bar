@@ -6,10 +6,10 @@ ButtonSensor button;
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
-  Serial.println("\n=== Button Test ===");
+  DEBUG_INIT();  
+  DEBUG_PRINTLN("\n=== Button Test ===");
   button.setup();
-  Serial.println("Press the button...");
+  DEBUG_PRINTLN("Press the button...");
 }
 
 void loop()

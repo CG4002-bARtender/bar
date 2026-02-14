@@ -32,13 +32,13 @@ void HallSensor::read()
 
 void HallSensor::print()
 {
-  Serial.printf("=========== Hall SENSORS ===========\n");
+  DEBUG_PRINTF("=========== Hall SENSORS ===========\n");
   for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; ++i)
   {
-    Serial.printf("[Hall A%d]: %+d\n", i, offsetValues[i]);
+    DEBUG_PRINTF("[Hall A%d]: %+d\n", i, offsetValues[i]);
   }
-  Serial.printf(closestHall == -1 ? "No magnet detected!\n" : "Closest Hall Sensor: A%d\n", closestHall);
-  Serial.printf("=====================================\n");
+  DEBUG_PRINTF(closestHall == -1 ? "No magnet detected!\n" : "Closest Hall Sensor: A%d\n", closestHall);
+  DEBUG_PRINTF("=====================================\n");
 }
 
 void HallSensor::calibrate() 

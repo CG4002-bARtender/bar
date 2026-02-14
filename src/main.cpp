@@ -34,7 +34,6 @@ MqttClient    mqtt(config::MQTT_BROKER, config::MQTT_PORT, config::MQTT_CLIENT_I
 
 QueueHandle_t audioQueue;
 QueueHandle_t hallQueue;
-SemaphoreHandle_t mqttMutex;
 
 // --- Helpers ---
 
@@ -46,22 +45,20 @@ void handleIdle();
 void handleRecording(unsigned long now);
 void handleEnd();
 
-// --- Core 0: MQTT tasks ---
+// --- Core 0: MQTT task ---
 
-void hallPublishTask(void* param);
-void audioPublishTask(void* param);
+void mqttPublishTask(void* param);
 
 // --- Core 1: Poll and upload sensor data ---
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
+  DEBUG_INIT();
   DEBUG_PRINTLN("\n=== Bar Firmware ===");
 
-  // Create queues + mutex
+  // Create queues
   audioQueue = xQueueCreate(config::MQTT_QUEUE_SIZE, sizeof(AudioMessage));
   hallQueue  = xQueueCreate(1, sizeof(int8_t));
-  mqttMutex  = xSemaphoreCreateMutex();
 
   // Sensor setup
   mic.setup();
@@ -84,9 +81,8 @@ void setup()
     delay(5000);
   }
 
-  // Launch MQTT tasks on Core 0 (hall at higher priority for consistent cadence)
-  xTaskCreatePinnedToCore(hallPublishTask,  "hall_pub",  4096, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(audioPublishTask, "audio_pub", 4096, NULL, 1, NULL, 0);
+  // Launch MQTT task on Core 0
+  xTaskCreatePinnedToCore(mqttPublishTask, "mqtt_pub", 4096, NULL, 1, NULL, 0);
 
   DEBUG_PRINTLN("Ready. Press button to start recording.");
 }
@@ -115,54 +111,48 @@ void loop()
     break;
   }
 
-  // Poll hall sensors + actuate LEDs
-  if (hall.shouldRead(now))
+  // Poll hall sensors only when IDLE (skip during recording for max audio throughput)
+  if (state == State::IDLE && hall.shouldRead(now))
   {
     hall.read();
     int closestHall = hall.getClosestHall();
-    
+
     for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; i++)
     {
       digitalWrite(config::HALL_LED_PINS[i], i == closestHall);
-    }    
-    
+    }
+
     xQueueOverwrite(hallQueue, &closestHall);
   }
 }
 
-void hallPublishTask(void* param)
+void mqttPublishTask(void* param)
 {
-  int8_t idx;
+  AudioMessage audioMsg;
+  int8_t hallIdx;
+  TickType_t lastHallPublish = 0;
+
   while (true)
   {
-    xSemaphoreTake(mqttMutex, portMAX_DELAY);
     mqtt.loop();
 
-    if (xQueueReceive(hallQueue, &idx, 0) == pdPASS)
+    while (xQueueReceive(audioQueue, &audioMsg, 0) == pdPASS)
+    {
+      mqtt.publish(config::MQTT_AUDIO_TOPIC, audioMsg.data, audioMsg.length);
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if (state == State::IDLE &&
+        (now - lastHallPublish) >= pdMS_TO_TICKS(config::MQTT_HALL_PUBLISH_INTERVAL_MS) &&
+        xQueueReceive(hallQueue, &hallIdx, 0) == pdPASS)
     {
       char json[32];
-      snprintf(json, sizeof(json), "{\"strongest\":%d}", idx);
+      snprintf(json, sizeof(json), "{\"strongest\":%d}", hallIdx);
       mqtt.publish(config::MQTT_HALL_TOPIC, json);
+      lastHallPublish = now;
     }
-    xSemaphoreGive(mqttMutex);
 
-    vTaskDelay(pdMS_TO_TICKS(config::MQTT_HALL_PUBLISH_INTERVAL_MS));
-  }
-}
-
-void audioPublishTask(void* param)
-{
-  AudioMessage msg;
-  while (true)
-  {
-    if (xQueueReceive(audioQueue, &msg, portMAX_DELAY) == pdPASS)
-    {
-      do {
-        xSemaphoreTake(mqttMutex, portMAX_DELAY);
-        mqtt.publish(config::MQTT_AUDIO_TOPIC, msg.data, msg.length);
-        xSemaphoreGive(mqttMutex);
-      } while (xQueueReceive(audioQueue, &msg, 0) == pdPASS);
-    }
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
@@ -194,13 +184,13 @@ void handleRecording(unsigned long now)
 
   mic.read();
 
-  size_t bytesRead = mic.getNumBytes16();
+  size_t bytesRead = mic.getNumBytes();
   if (bytesRead == 0)
   {
     return;
   }
 
-  const uint8_t* audioData = mic.getSamples16Buffer();
+  const uint8_t* audioData = mic.getSamplesBuffer();
 
   size_t offset = 0;
   while (offset < bytesRead)
@@ -230,10 +220,15 @@ void handleEnd()
 size_t packFragment(uint8_t* out, uint16_t msgId, uint16_t fragId,
                     const uint8_t* audio, size_t audioLen)
 {
+  // Copy message id header bits
   out[0] = msgId & 0xFF;
   out[1] = (msgId >> 8) & 0xFF;
+  
+  // Copy frag id header bits
   out[2] = fragId & 0xFF;
   out[3] = (fragId >> 8) & 0xFF;
+  
+  // Copy audio data bits
   if (audioLen > 0)
   {
     memcpy(out + 4, audio, audioLen);

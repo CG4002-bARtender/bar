@@ -17,13 +17,13 @@ public:
   void print();
 
   const uint8_t* getSamplesBuffer() const { return reinterpret_cast<const uint8_t*>(samples); }
-  const uint8_t* getSamples16Buffer() const { return reinterpret_cast<const uint8_t*>(samples16); }
-  size_t getNumBytesRead() const { return numBytesRead; }
-  size_t getNumBytes16() const { return numBytes16; }
+  size_t getNumBytes() const { return numSamples * sizeof(int16_t); }
+  size_t getNumSamples() const { return numSamples; }
 
 private:
-  int32_t samples[config::MIC_SAMPLE_BATCH_SIZE];
-  int16_t samples16[config::MIC_SAMPLE_BATCH_SIZE];
-  size_t numBytesRead;
-  size_t numBytes16;
+  union {
+    int32_t raw32[config::MIC_SAMPLE_BATCH_SIZE];
+    int16_t samples[config::MIC_SAMPLE_BATCH_SIZE];
+  };
+  size_t numSamples;
 };

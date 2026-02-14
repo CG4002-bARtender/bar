@@ -1,6 +1,6 @@
 #include "mic_sensor.h"
 
-MicSensor::MicSensor() : samples(), samples16(), numBytesRead(0), numBytes16(0) {}
+MicSensor::MicSensor() : raw32(), numSamples(0) {}
 
 MicSensor::~MicSensor()
 {
@@ -31,7 +31,7 @@ void MicSensor::setup()
     };
 
     esp_err_t err;
-    
+
     err = i2s_driver_install(I2S_NUM_0, &i2sConfig, 0, NULL);
     DEBUG_PRINTF("I2S driver install: %s\n", err == ESP_OK ? "OK" : "FAILED");
 
@@ -41,48 +41,41 @@ void MicSensor::setup()
 
 void MicSensor::read()
 {
-  esp_err_t err = i2s_read(I2S_NUM_0, &samples, sizeof(samples), &numBytesRead, 1000);
+  size_t bytesRead;
+  esp_err_t err = i2s_read(I2S_NUM_0, raw32, sizeof(raw32), &bytesRead, 1000);
   if (err != ESP_OK) {
-    numBytesRead = 0;
-    numBytes16 = 0;
+    numSamples = 0;
     DEBUG_PRINTF("Failed to read!");
     return;
   }
 
-  // Convert 32-bit → 16-bit: keep top 16 of the 24 real bits from INMP441
-  size_t numSamples = numBytesRead / sizeof(int32_t);
+  numSamples = bytesRead / sizeof(int32_t);
   for (size_t i = 0; i < numSamples; i++)
   {
-    samples16[i] = (int16_t)(samples[i] >> 16);
+    samples[i] = (int16_t)(raw32[i] >> 16);
   }
-  numBytes16 = numSamples * sizeof(int16_t);
 }
 
 void MicSensor::flush()
 {
   size_t discarded;
-  while (i2s_read(I2S_NUM_0, samples, sizeof(samples), &discarded, 0) == ESP_OK && discarded > 0);
-  numBytesRead = 0;
-  numBytes16 = 0;
+  while (i2s_read(I2S_NUM_0, raw32, sizeof(raw32), &discarded, 0) == ESP_OK && discarded > 0);
+  numSamples = 0;
 }
 
 void MicSensor::print()
-{    
-  if (numBytesRead > 0) {
-    // Print first sample and last sample
-    int numSamplesRead = numBytesRead / 4;
-    Serial.printf("Bytes: %d | First: %d | Last: %d | ", 
-                  numBytesRead, samples[0], samples[numSamplesRead-1]);
-    
-    // Check if ANY non-zero values
+{
+  if (numSamples > 0) {
+    DEBUG_PRINTF("Samples: %d | First: %d | Last: %d | ",
+                  numSamples, samples[0], samples[numSamples - 1]);
+
     bool hasData = false;
-    for (int i = 0; i < numSamplesRead; i++) {
+    for (size_t i = 0; i < numSamples; i++) {
       if (samples[i] != 0) {
         hasData = true;
         break;
       }
     }
-    Serial.println(hasData ? "HAS DATA ✓" : "ALL ZEROS ✗");
+    DEBUG_PRINTLN(hasData ? "HAS DATA" : "ALL ZEROS");
   }
 }
-      

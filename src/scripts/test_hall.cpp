@@ -6,8 +6,8 @@ HallSensor hallSensor;
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
-  Serial.println("=== Hall Sensor Test Script ===");
+  DEBUG_INIT();  
+  DEBUG_PRINTLN("=== Hall Sensor Test Script ===");
   
   hallSensor.setup();
 }

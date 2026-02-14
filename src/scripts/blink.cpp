@@ -3,17 +3,17 @@
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
+  DEBUG_INIT();  
   pinMode(config::INBUILT_LED_PIN, OUTPUT);
 }
 
 void loop()
 {
-  Serial.println("ON");
+  DEBUG_PRINTLN("ON");
   digitalWrite(config::INBUILT_LED_PIN, HIGH);
   delay(config::BLINK_DELAY_MS);
 
-  Serial.println("OFF");
+  DEBUG_PRINTLN("OFF");
   digitalWrite(config::INBUILT_LED_PIN, LOW);
   delay(config::BLINK_DELAY_MS);
 }

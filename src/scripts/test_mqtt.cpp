@@ -10,12 +10,12 @@ void createDummyData(JsonDocument &doc);
 
 void setup()
 {
-  Serial.begin(config::BAUD_RATE);
-  Serial.println("=== MQTT Test Script ===");
+  DEBUG_INIT();
+  DEBUG_PRINTLN("=== MQTT Test Script ===");
 
   while (!mqttClient.connect(config::WIFI_SSID, config::WIFI_PASSWORD))
   {
-    Serial.println("Failed to connect. Reconnecting...");
+    DEBUG_PRINTLN("Failed to connect. Reconnecting...");
     delay(5000);
   }
 }

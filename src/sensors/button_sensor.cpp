@@ -34,7 +34,7 @@ bool ButtonSensor::wasPressed()
 
 void ButtonSensor::print()
 {
-  Serial.printf("=========== Button ===========\n");
-  Serial.printf("Pressed: %s\n", wasPressed() ? "YES" : "NO");
-  Serial.printf("==============================\n");
+  DEBUG_PRINTF("=========== Button ===========\n");
+  DEBUG_PRINTF("Pressed: %s\n", wasPressed() ? "YES" : "NO");
+  DEBUG_PRINTF("==============================\n");
 }

@@ -2,14 +2,16 @@
 
 #include <Arduino.h>
 
-// Set to 0 to disable all debug serial prints for production
-#define DEBUG_MODE 1
+// Set to 0 to disable all debug serial prints for production (speeds up program significantly)
+#define DEBUG_MODE 0
 
 #if DEBUG_MODE
+  #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
   #define DEBUG_PRINT(...)    Serial.print(__VA_ARGS__)
   #define DEBUG_PRINTLN(...)  Serial.println(__VA_ARGS__)
   #define DEBUG_PRINTF(...)   Serial.printf(__VA_ARGS__)
 #else
+  #define DEBUG_INIT()        ((void)0)
   #define DEBUG_PRINT(...)    ((void)0)
   #define DEBUG_PRINTLN(...)  ((void)0)
   #define DEBUG_PRINTF(...)   ((void)0)
@@ -40,9 +42,9 @@ namespace config
   constexpr int         RECORDING_BUTTON_INTERVAL_MS = 33;
   constexpr int         RECORDING_DURATION_MS = 3000;
 
-  // Hall config
-  constexpr int         HALL_SENSOR_PINS[] = {A0, A1, A2, A3, A4 };
-  constexpr int         HALL_LED_PINS[] = {D0, D1, D2, D3, D4};
+  // Hall config 
+  constexpr int         HALL_SENSOR_PINS[] = {32, 33, 34, 35, 36};
+  constexpr int         HALL_LED_PINS[] = {4, 5, 13, 16, 18 };
   constexpr size_t      HALL_SENSOR_PINS_LEN = sizeof(HALL_SENSOR_PINS) / sizeof(HALL_SENSOR_PINS[0]);
 
   constexpr int         HALL_INTERVAL_MS = 33;
@@ -51,8 +53,8 @@ namespace config
   constexpr int         HALL_THRESHOLD = 150;
 
   // WiFi config
-  constexpr const char* WIFI_SSID = "Medea";
-  constexpr const char* WIFI_PASSWORD = "12345678";
+  constexpr const char* WIFI_SSID = "Home-S";
+  constexpr const char* WIFI_PASSWORD = "selvan555";
 
   // MQTT config
   constexpr const char* MQTT_BROKER = "k12141b9.ala.eu-central-1.emqxsl.com";
@@ -64,7 +66,7 @@ namespace config
   constexpr int         MQTT_PUBLISH_INTERVAL_MS = 2000;
   constexpr size_t      MQTT_CHUNK_SIZE = 1100;
   constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
-  constexpr size_t      MQTT_QUEUE_SIZE = 40;
+  constexpr size_t      MQTT_QUEUE_SIZE = 80; 
 
   // Audio MQTT protocol
   constexpr const char* MQTT_AUDIO_TOPIC = "glove/audio";
