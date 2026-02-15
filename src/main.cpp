@@ -44,6 +44,8 @@ QueueHandle_t audioQueue;   // filled AudioMessage* ready to publish
 QueueHandle_t freePool;     // recycled AudioMessage* available to fill
 QueueHandle_t hallQueue;
 
+SemaphoreHandle_t mqttMutex;
+
 // --- Helpers ---
 
 inline void writeHeader(uint8_t* out, uint16_t msgId, uint16_t fragId)
@@ -61,9 +63,10 @@ void handleIdle();
 void handleRecording(unsigned long now);
 void handleEnd();
 
-// --- Core 0: MQTT task ---
+// --- Core 0: MQTT tasks ---
 
-void mqttPublishTask(void* param);
+void audioPublishTask(void* param);
+void hallPublishTask(void* param);
 
 // --- Core 1: Poll and upload sensor data ---
 
@@ -101,15 +104,19 @@ void setup()
     digitalWrite(config::HALL_LED_PINS[i], LOW);
   }
 
-  // Connect WiFi + MQTT (safe: Core 0 task doesn't exist yet)
+  // Connect WiFi + MQTT (safe: Core 0 tasks don't exist yet)
   while (!mqtt.connect(config::WIFI_SSID, config::WIFI_PASSWORD))
   {
     DEBUG_PRINTLN("MQTT connect failed. Retrying in 5s...");
     delay(5000);
   }
 
-  // Launch MQTT task on Core 0
-  xTaskCreatePinnedToCore(mqttPublishTask, "mqtt_pub", 4096, NULL, 1, NULL, 0);
+  // Mutex for shared MQTT socket (PubSubClient is not thread-safe)
+  mqttMutex = xSemaphoreCreateMutex();
+
+  // Launch MQTT tasks on Core 0 (hall at higher priority to interleave with audio)
+  xTaskCreatePinnedToCore(audioPublishTask, "audio_pub", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(hallPublishTask,  "hall_pub",  4096, NULL, 2, NULL, 0);
 
   DEBUG_PRINTLN("Ready. Press button to start recording.");
 }
@@ -153,34 +160,59 @@ void loop()
   }
 }
 
-void mqttPublishTask(void* param)
+void audioPublishTask(void* param)
 {
   AudioMessage* audioMsg;
-  int8_t hallIdx;
-  TickType_t lastHallPublish = 0;
 
   while (true)
   {
-    mqtt.loop();
-
-    while (xQueueReceive(audioQueue, &audioMsg, 0) == pdPASS)
+    if (xQueueReceive(audioQueue, &audioMsg, pdMS_TO_TICKS(10)) == pdPASS)
     {
-      mqtt.publish(config::MQTT_AUDIO_TOPIC, audioMsg->data, audioMsg->length);
+      if (xSemaphoreTake(mqttMutex, portMAX_DELAY) == pdTRUE)
+      {
+        mqtt.loop();
+        mqtt.publish(config::MQTT_AUDIO_TOPIC, audioMsg->data, audioMsg->length);
+        xSemaphoreGive(mqttMutex);
+      }
       xQueueSend(freePool, &audioMsg, 0);  // return slot to pool
     }
+    else
+    {
+      // No audio pending — just maintain MQTT keepalive
+      if (xSemaphoreTake(mqttMutex, pdMS_TO_TICKS(50)) == pdTRUE)
+      {
+        mqtt.loop();
+        xSemaphoreGive(mqttMutex);
+      }
+    }
+  }
+}
 
+void hallPublishTask(void* param)
+{
+  int8_t hallIdx;
+  TickType_t lastPublish = 0;
+
+  while (true)
+  {
     TickType_t now = xTaskGetTickCount();
+
     if (state == State::IDLE &&
-        (now - lastHallPublish) >= pdMS_TO_TICKS(config::MQTT_PUBLISH_INTERVAL_MS) &&
+        (now - lastPublish) >= pdMS_TO_TICKS(config::MQTT_PUBLISH_INTERVAL_MS) &&
         xQueueReceive(hallQueue, &hallIdx, 0) == pdPASS)
     {
-      char json[32];
-      snprintf(json, sizeof(json), "{\"strongest\":%d}", hallIdx);
-      mqtt.publish(config::MQTT_HALL_TOPIC, json);
-      lastHallPublish = now;
+      if (xSemaphoreTake(mqttMutex, portMAX_DELAY) == pdTRUE)
+      {
+        mqtt.loop();
+        char json[32];
+        snprintf(json, sizeof(json), "{\"strongest\":%d}", hallIdx);
+        mqtt.publish(config::MQTT_HALL_TOPIC, json);
+        xSemaphoreGive(mqttMutex);
+      }
+      lastPublish = xTaskGetTickCount();
     }
 
-    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
