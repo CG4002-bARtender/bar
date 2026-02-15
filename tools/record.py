@@ -19,12 +19,12 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 # MQTT Configuration (matches firmware config.h)
-MQTT_BROKER = "k12141b9.ala.eu-central-1.emqxsl.com"
+MQTT_BROKER = "192.168.1.4"
 MQTT_PORT = 8883
 MQTT_USERNAME = "test"
 MQTT_PASSWORD = "test"
 MQTT_CLIENT_ID = "python_audio_receiver"
-MQTT_AUDIO_TOPIC = "glove/audio"
+MQTT_AUDIO_TOPIC = "audio"
 
 # Audio Configuration
 SAMPLE_RATE = 16000

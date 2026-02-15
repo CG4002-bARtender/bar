@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // Set to 0 to disable all debug serial prints for production (speeds up program significantly)
-#define DEBUG_MODE 0
+#define DEBUG_MODE 1
 
 #if DEBUG_MODE
   #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
@@ -38,7 +38,7 @@ namespace config
 
   // Record config
   constexpr int         RECORDING_BUTTON_PIN = 26;
-  constexpr int         RECORDING_LED_PIN = D5;
+  constexpr int         RECORDING_LED_PIN = 24;
   constexpr int         RECORDING_BUTTON_INTERVAL_MS = 33;
   constexpr int         RECORDING_DURATION_MS = 3000;
 
@@ -57,23 +57,22 @@ namespace config
   constexpr const char* WIFI_PASSWORD = "selvan555";
 
   // MQTT config
-  constexpr const char* MQTT_BROKER = "k12141b9.ala.eu-central-1.emqxsl.com";
+  constexpr const char* MQTT_BROKER = "192.168.1.4";
   constexpr int         MQTT_PORT = 8883;
   constexpr const char* MQTT_USERNAME = "test";  
   constexpr const char* MQTT_PASSWORD = "test";  
-  constexpr const char* MQTT_CLIENT_ID = "esp32_glove";
-  constexpr const char* MQTT_TOPIC = "glove";
+  constexpr const char* MQTT_CLIENT_ID = "bar";
   constexpr int         MQTT_PUBLISH_INTERVAL_MS = 2000;
-  constexpr size_t      MQTT_CHUNK_SIZE = 1100;
-  constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
-  constexpr size_t      MQTT_QUEUE_SIZE = 80; 
 
-  // Audio MQTT protocol
-  constexpr const char* MQTT_AUDIO_TOPIC = "glove/audio";
+  // MQTT Topics
+  constexpr const char* MQTT_TEST_TOPIC  = "test";
+  constexpr const char* MQTT_AUDIO_TOPIC = "audio";
+  constexpr const char* MQTT_HALL_TOPIC  = "hall";
+
+  // MQTT Audio chunking
   constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024;
+  constexpr size_t      MQTT_CHUNK_SIZE = MQTT_AUDIO_CHUNK_SIZE + 32;
+  constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
+  constexpr size_t      MQTT_AUDIO_QUEUE_SIZE = 80; 
   constexpr uint16_t    FRAGMENT_SENTINEL = 0xFFFF;
-
-  // Hall MQTT protocol
-  constexpr const char* MQTT_HALL_TOPIC = "glove/hall";
-  constexpr int         MQTT_HALL_PUBLISH_INTERVAL_MS = 2000;
 }

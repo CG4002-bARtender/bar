@@ -31,7 +31,7 @@ void loop()
     JsonDocument doc;
     createDummyData(doc);
 
-    mqttClient.publish(config::MQTT_TOPIC, doc);
+    mqttClient.publish(config::MQTT_TEST_TOPIC, doc);
   }
 }
 

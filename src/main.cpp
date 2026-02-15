@@ -57,7 +57,7 @@ void setup()
   DEBUG_PRINTLN("\n=== Bar Firmware ===");
 
   // Create queues
-  audioQueue = xQueueCreate(config::MQTT_QUEUE_SIZE, sizeof(AudioMessage));
+  audioQueue = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage));
   hallQueue  = xQueueCreate(1, sizeof(int8_t));
 
   // Sensor setup
@@ -143,7 +143,7 @@ void mqttPublishTask(void* param)
 
     TickType_t now = xTaskGetTickCount();
     if (state == State::IDLE &&
-        (now - lastHallPublish) >= pdMS_TO_TICKS(config::MQTT_HALL_PUBLISH_INTERVAL_MS) &&
+        (now - lastHallPublish) >= pdMS_TO_TICKS(config::MQTT_PUBLISH_INTERVAL_MS) &&
         xQueueReceive(hallQueue, &hallIdx, 0) == pdPASS)
     {
       char json[32];
