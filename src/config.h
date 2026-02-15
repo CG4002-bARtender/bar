@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // Set to 0 to disable all debug serial prints for production (speeds up program significantly)
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 
 #if DEBUG_MODE
   #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
@@ -70,9 +70,10 @@ namespace config
   constexpr const char* MQTT_HALL_TOPIC  = "hall";
 
   // MQTT Audio chunking
-  constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024;
+  constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024 * 8;
   constexpr size_t      MQTT_CHUNK_SIZE = MQTT_AUDIO_CHUNK_SIZE + 32;
   constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
-  constexpr size_t      MQTT_AUDIO_QUEUE_SIZE = 80; 
+  constexpr size_t      MAX_AUDIO_POOL_BYTES = 100 * 1024; 
+  constexpr size_t      AUDIO_POOL_SIZE = MAX_AUDIO_POOL_BYTES / (MQTT_AUDIO_CHUNK_SIZE + 6);  
   constexpr uint16_t    FRAGMENT_SENTINEL = 0xFFFF;
 }

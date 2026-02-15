@@ -22,6 +22,10 @@ uint16_t      messageId = 0;
 uint16_t      fragmentId = 0;
 unsigned long recordStartMs = 0;
 
+// Accumulation state: current pool slot being filled
+AudioMessage* currentSlot = nullptr;
+size_t        slotOffset  = 0;
+
 // --- Peripherals ---
 
 MicSensor     mic;
@@ -42,8 +46,15 @@ QueueHandle_t hallQueue;
 
 // --- Helpers ---
 
-size_t packFragment(uint8_t* out, uint16_t msgId, uint16_t fragId, const uint8_t* audio, size_t audioLen);
-void enqueueFragment(uint16_t msgId, uint16_t fragId, const uint8_t* audio, size_t audioLen);
+inline void writeHeader(uint8_t* out, uint16_t msgId, uint16_t fragId)
+{
+  out[0] = msgId & 0xFF;
+  out[1] = (msgId >> 8) & 0xFF;
+  out[2] = fragId & 0xFF;
+  out[3] = (fragId >> 8) & 0xFF;
+}
+
+void flushCurrentSlot();
 
 // --- State handlers ---
 void handleIdle();
@@ -62,15 +73,15 @@ void setup()
   DEBUG_PRINTLN("\n=== Bar Firmware ===");
 
   // Heap-allocate the audio buffer pool (keeps .bss small)
-  audioPool = new AudioMessage[config::MQTT_AUDIO_QUEUE_SIZE];
+  audioPool = new AudioMessage[config::AUDIO_POOL_SIZE];
 
   // Create queues (audio queues carry pointers, not full structs)
-  audioQueue = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage*));
-  freePool   = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage*));
+  audioQueue = xQueueCreate(config::AUDIO_POOL_SIZE, sizeof(AudioMessage*));
+  freePool   = xQueueCreate(config::AUDIO_POOL_SIZE, sizeof(AudioMessage*));
   hallQueue  = xQueueCreate(1, sizeof(int8_t));
 
   // Seed the free pool with pointers to every slot
-  for (size_t i = 0; i < config::MQTT_AUDIO_QUEUE_SIZE; i++)
+  for (size_t i = 0; i < config::AUDIO_POOL_SIZE; i++)
   {
     AudioMessage* p = &audioPool[i];
     xQueueSend(freePool, &p, 0);
@@ -194,80 +205,70 @@ void handleRecording(unsigned long now)
 {
   if (button.wasPressed() || (now - recordStartMs >= config::RECORDING_DURATION_MS))
   {
+    flushCurrentSlot();
     DEBUG_PRINTLN("Recording stopped.");
     state = State::END;
     return;
   }
 
-  mic.read();
-
-  size_t bytesRead = mic.getNumBytes();
-  if (bytesRead == 0)
+  // Acquire a pool slot if we don't have one
+  if (!currentSlot)
   {
-    return;
+    if (xQueueReceive(freePool, &currentSlot, 0) != pdPASS)
+    {
+      DEBUG_PRINTLN("Pool exhausted, samples dropped");
+      mic.read();  // drain DMA to prevent stall
+      return;
+    }
+    slotOffset = 0;
   }
 
-  const uint8_t* audioData = mic.getSamplesBuffer();
+  // Read I2S and convert 32→16 bit directly into pool slot (after 4-byte header)
+  size_t bytesWritten = mic.readInto(currentSlot->data + 4 + slotOffset);
+  if (bytesWritten == 0) return;
+  slotOffset += bytesWritten;
 
-  size_t offset = 0;
-  while (offset < bytesRead)
+  // If slot is full, write header and enqueue
+  if (slotOffset >= config::MQTT_AUDIO_CHUNK_SIZE)
   {
-    size_t chunkLen = bytesRead - offset;
-    if (chunkLen > config::MQTT_AUDIO_CHUNK_SIZE)
-    {
-      chunkLen = config::MQTT_AUDIO_CHUNK_SIZE;
-    }
-
-    enqueueFragment(messageId, fragmentId, audioData + offset, chunkLen);
+    writeHeader(currentSlot->data, messageId, fragmentId);
+    currentSlot->length = 4 + slotOffset;
+    xQueueSend(audioQueue, &currentSlot, 0);
+    currentSlot = nullptr;
     fragmentId++;
-    offset += chunkLen;
   }
 }
 
 void handleEnd()
 {
-  enqueueFragment(messageId, config::FRAGMENT_SENTINEL, nullptr, 0);
-  DEBUG_PRINTF("Sentinel queued. Session %u complete: %u fragments.\n", messageId, fragmentId);
+  // Send sentinel fragment
+  AudioMessage* slot;
+  if (xQueueReceive(freePool, &slot, 0) == pdPASS)
+  {
+    writeHeader(slot->data, messageId, config::FRAGMENT_SENTINEL);
+    slot->length = 4;
+    xQueueSend(audioQueue, &slot, 0);
+  }
 
+  DEBUG_PRINTF("Sentinel queued. Session %u complete: %u fragments.\n", messageId, fragmentId);
   digitalWrite(config::RECORDING_LED_PIN, LOW);
   state = State::IDLE;
 }
 
-
-size_t packFragment(uint8_t* out, uint16_t msgId, uint16_t fragId,
-                    const uint8_t* audio, size_t audioLen)
+void flushCurrentSlot()
 {
-  // Copy message id header bits
-  out[0] = msgId & 0xFF;
-  out[1] = (msgId >> 8) & 0xFF;
-  
-  // Copy frag id header bits
-  out[2] = fragId & 0xFF;
-  out[3] = (fragId >> 8) & 0xFF;
-  
-  // Copy audio data bits
-  if (audioLen > 0)
+  if (currentSlot && slotOffset > 0)
   {
-    memcpy(out + 4, audio, audioLen);
+    writeHeader(currentSlot->data, messageId, fragmentId);
+    currentSlot->length = 4 + slotOffset;
+    xQueueSend(audioQueue, &currentSlot, 0);
+    currentSlot = nullptr;
+    fragmentId++;
   }
-  return 4 + audioLen;
-}
-
-void enqueueFragment(uint16_t msgId, uint16_t fragId,
-                     const uint8_t* audio, size_t audioLen)
-{
-  AudioMessage* slot;
-  if (xQueueReceive(freePool, &slot, 0) != pdPASS)
+  else if (currentSlot)
   {
-    DEBUG_PRINTLN("Pool exhausted, fragment dropped");
-    return;
-  }
-
-  slot->length = packFragment(slot->data, msgId, fragId, audio, audioLen);
-
-  if (xQueueSend(audioQueue, &slot, 0) != pdPASS)
-  {
-    DEBUG_PRINTLN("Queue full, fragment dropped");
-    xQueueSend(freePool, &slot, 0);  // return slot on failure
+    // Empty slot, return to pool
+    xQueueSend(freePool, &currentSlot, 0);
+    currentSlot = nullptr;
   }
 }

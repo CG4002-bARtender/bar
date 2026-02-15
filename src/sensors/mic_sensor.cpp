@@ -56,6 +56,21 @@ void MicSensor::read()
   }
 }
 
+size_t MicSensor::readInto(uint8_t* dest)
+{
+  size_t bytesRead;
+  esp_err_t err = i2s_read(I2S_NUM_0, raw32, sizeof(raw32), &bytesRead, 1000);
+  if (err != ESP_OK || bytesRead == 0) return 0;
+
+  size_t n = bytesRead / sizeof(int32_t);
+  int16_t* out = reinterpret_cast<int16_t*>(dest);
+  for (size_t i = 0; i < n; i++)
+  {
+    out[i] = (int16_t)(raw32[i] >> 16);
+  }
+  return n * sizeof(int16_t);
+}
+
 void MicSensor::flush()
 {
   size_t discarded;

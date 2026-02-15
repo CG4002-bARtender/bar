@@ -13,6 +13,7 @@ public:
 
   void setup();
   void read();
+  size_t readInto(uint8_t* dest);
   void flush();
   void print();
 
