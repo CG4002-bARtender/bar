@@ -38,7 +38,7 @@ namespace config
 
   // Record config
   constexpr int         RECORDING_BUTTON_PIN = 26;
-  constexpr int         RECORDING_LED_PIN = 24;
+  constexpr int         RECORDING_LED_PIN = D2;
   constexpr int         RECORDING_BUTTON_INTERVAL_MS = 33;
   constexpr int         RECORDING_DURATION_MS = 3000;
 

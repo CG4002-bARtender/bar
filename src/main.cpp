@@ -30,9 +30,14 @@ HallSensor    hall;
 MqttClient    mqtt(config::MQTT_BROKER, config::MQTT_PORT, config::MQTT_CLIENT_ID,
                           config::MQTT_PUBLISH_INTERVAL_MS, config::MQTT_USERNAME, config::MQTT_PASSWORD);
 
-// --- FreeRTOS queues ---
+// --- Audio buffer pool (avoids copying ~1 KB structs through queues) ---
 
-QueueHandle_t audioQueue;
+static AudioMessage* audioPool;
+
+// --- FreeRTOS queues (audio queues carry pointers, not full structs) ---
+
+QueueHandle_t audioQueue;   // filled AudioMessage* ready to publish
+QueueHandle_t freePool;     // recycled AudioMessage* available to fill
 QueueHandle_t hallQueue;
 
 // --- Helpers ---
@@ -56,9 +61,20 @@ void setup()
   DEBUG_INIT();
   DEBUG_PRINTLN("\n=== Bar Firmware ===");
 
-  // Create queues
-  audioQueue = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage));
+  // Heap-allocate the audio buffer pool (keeps .bss small)
+  audioPool = new AudioMessage[config::MQTT_AUDIO_QUEUE_SIZE];
+
+  // Create queues (audio queues carry pointers, not full structs)
+  audioQueue = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage*));
+  freePool   = xQueueCreate(config::MQTT_AUDIO_QUEUE_SIZE, sizeof(AudioMessage*));
   hallQueue  = xQueueCreate(1, sizeof(int8_t));
+
+  // Seed the free pool with pointers to every slot
+  for (size_t i = 0; i < config::MQTT_AUDIO_QUEUE_SIZE; i++)
+  {
+    AudioMessage* p = &audioPool[i];
+    xQueueSend(freePool, &p, 0);
+  }
 
   // Sensor setup
   mic.setup();
@@ -128,7 +144,7 @@ void loop()
 
 void mqttPublishTask(void* param)
 {
-  AudioMessage audioMsg;
+  AudioMessage* audioMsg;
   int8_t hallIdx;
   TickType_t lastHallPublish = 0;
 
@@ -138,7 +154,8 @@ void mqttPublishTask(void* param)
 
     while (xQueueReceive(audioQueue, &audioMsg, 0) == pdPASS)
     {
-      mqtt.publish(config::MQTT_AUDIO_TOPIC, audioMsg.data, audioMsg.length);
+      mqtt.publish(config::MQTT_AUDIO_TOPIC, audioMsg->data, audioMsg->length);
+      xQueueSend(freePool, &audioMsg, 0);  // return slot to pool
     }
 
     TickType_t now = xTaskGetTickCount();
@@ -239,11 +256,18 @@ size_t packFragment(uint8_t* out, uint16_t msgId, uint16_t fragId,
 void enqueueFragment(uint16_t msgId, uint16_t fragId,
                      const uint8_t* audio, size_t audioLen)
 {
-  AudioMessage msg;
-  msg.length = packFragment(msg.data, msgId, fragId, audio, audioLen);
+  AudioMessage* slot;
+  if (xQueueReceive(freePool, &slot, 0) != pdPASS)
+  {
+    DEBUG_PRINTLN("Pool exhausted, fragment dropped");
+    return;
+  }
 
-  if (xQueueSend(audioQueue, &msg, 0) != pdPASS)
+  slot->length = packFragment(slot->data, msgId, fragId, audio, audioLen);
+
+  if (xQueueSend(audioQueue, &slot, 0) != pdPASS)
   {
     DEBUG_PRINTLN("Queue full, fragment dropped");
+    xQueueSend(freePool, &slot, 0);  // return slot on failure
   }
 }
