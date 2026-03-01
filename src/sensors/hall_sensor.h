@@ -18,8 +18,8 @@ public:
 private:
   void calibrate();
 
-  int offsetValues[config::HALL_SENSOR_PINS_LEN];
-  int baselineValues[config::HALL_SENSOR_PINS_LEN];
+  int offsetValues[config::hall::SENSOR_PINS_LEN];
+  int baselineValues[config::hall::SENSOR_PINS_LEN];
 
   int closestHall;
 };

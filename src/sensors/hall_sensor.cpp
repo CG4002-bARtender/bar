@@ -1,31 +1,27 @@
 #include "hall_sensor.h"
 
-HallSensor::HallSensor() : Sensor(config::HALL_INTERVAL_MS), closestHall(0) {};
+HallSensor::HallSensor() : Sensor(config::hall::INTERVAL_MS), closestHall(0) {};
 
 void HallSensor::setup()
 {
-  for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; ++i)
+  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
-    pinMode(config::HALL_SENSOR_PINS[i], INPUT);
-    analogSetPinAttenuation(config::HALL_SENSOR_PINS[i], ADC_11db);
+    pinMode(config::hall::SENSOR_PINS[i], INPUT);
+    analogSetPinAttenuation(config::hall::SENSOR_PINS[i], ADC_11db);
   }
   calibrate();
 }
 
 void HallSensor::read()
 {
-  int strongestAbsoluteOffset = 0;
   closestHall = -1;
-
-  for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; ++i)
+  int largestSeen = 0;
+  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
-    offsetValues[i] = analogRead(config::HALL_SENSOR_PINS[i]) - baselineValues[i];
-    int absoluteOffset = abs(offsetValues[i]);
-    
-    if (absoluteOffset > strongestAbsoluteOffset)
-    {
-      strongestAbsoluteOffset = absoluteOffset;
+    offsetValues[i] = analogRead(config::hall::SENSOR_PINS[i]) - baselineValues[i];
+    if (offsetValues[i] > largestSeen && offsetValues[i] > 30) {
       closestHall = i;
+      largestSeen = offsetValues[i];
     }
   }
 }
@@ -33,7 +29,7 @@ void HallSensor::read()
 void HallSensor::print()
 {
   DEBUG_PRINTF("=========== Hall SENSORS ===========\n");
-  for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; ++i)
+  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
     DEBUG_PRINTF("[Hall A%d]: %+d\n", i, offsetValues[i]);
   }
@@ -43,17 +39,17 @@ void HallSensor::print()
 
 void HallSensor::calibrate() 
 {
-  for (size_t i = 0; i < config::HALL_CALIBRATION_LEN; ++i) 
+  for (size_t i = 0; i < config::hall::CALIBRATION_ROUNDS; ++i) 
   {
-    for (size_t j = 0; j < config::HALL_SENSOR_PINS_LEN; ++j)
+    for (size_t j = 0; j < config::hall::SENSOR_PINS_LEN; ++j)
     {
-      baselineValues[j] += analogRead(config::HALL_SENSOR_PINS[j]);
+      baselineValues[j] += analogRead(config::hall::SENSOR_PINS[j]);
     }
-    delay(config::HALL_CALIBRATION_DELAY);
+    delay(config::hall::CALIBRATION_DELAY);
   }
 
-  for (size_t j = 0; j < config::HALL_SENSOR_PINS_LEN; ++j)
+  for (size_t j = 0; j < config::hall::SENSOR_PINS_LEN; ++j)
   {
-    baselineValues[j] = baselineValues[j] / config::HALL_CALIBRATION_LEN; 
+    baselineValues[j] = baselineValues[j] / config::hall::CALIBRATION_ROUNDS; 
   }
 }

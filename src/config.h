@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // Set to 0 to disable all debug serial prints for production (speeds up program significantly)
-#define DEBUG_MODE 0
+#define DEBUG_MODE 1
 
 #if DEBUG_MODE
   #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
@@ -42,38 +42,25 @@ namespace config
   constexpr int         RECORDING_BUTTON_INTERVAL_MS = 33;
   constexpr int         RECORDING_DURATION_MS = 3000;
 
-  // Hall config 
-  constexpr int         HALL_SENSOR_PINS[] = {32, 33, 34, 35, 36};
-  constexpr int         HALL_LED_PINS[] = {4, 5, 13, 16, 18 };
-  constexpr size_t      HALL_SENSOR_PINS_LEN = sizeof(HALL_SENSOR_PINS) / sizeof(HALL_SENSOR_PINS[0]);
+  namespace hall {
+    constexpr int         SENSOR_PINS[] = {36, 39, 34, 35, 15};
+    constexpr int         LED_PINS[] = {25, 26, 27, 13, 5 };
+    constexpr size_t      SENSOR_PINS_LEN = sizeof(SENSOR_PINS) / sizeof(SENSOR_PINS[0]);
+    constexpr int         INTERVAL_MS = 400;
+    constexpr int         CALIBRATION_ROUNDS = 30;
+    constexpr int         CALIBRATION_DELAY = 200;
+    constexpr int         NOISE_THRESHOLD = 30;
+  }
 
-  constexpr int         HALL_INTERVAL_MS = 33;
-  constexpr int         HALL_CALIBRATION_LEN = 30;
-  constexpr int         HALL_CALIBRATION_DELAY = 200;
-  constexpr int         HALL_THRESHOLD = 150;
-
-  // WiFi config
-  constexpr const char* WIFI_SSID = "Home-S";
-  constexpr const char* WIFI_PASSWORD = "selvan555";
-
-  // MQTT config
-  constexpr const char* MQTT_BROKER = "192.168.1.4";
-  constexpr int         MQTT_PORT = 8883;
-  constexpr const char* MQTT_USERNAME = "test";  
-  constexpr const char* MQTT_PASSWORD = "test";  
-  constexpr const char* MQTT_CLIENT_ID = "bar";
-  constexpr int         MQTT_PUBLISH_INTERVAL_MS = 2000;
-
-  // MQTT Topics
-  constexpr const char* MQTT_TEST_TOPIC  = "test";
-  constexpr const char* MQTT_AUDIO_TOPIC = "audio";
-  constexpr const char* MQTT_HALL_TOPIC  = "hall";
-
-  // MQTT Audio chunking
-  constexpr size_t      MQTT_AUDIO_CHUNK_SIZE = 1024 * 8;
-  constexpr size_t      MQTT_CHUNK_SIZE = MQTT_AUDIO_CHUNK_SIZE + 32;
-  constexpr size_t      MQTT_JSON_BUFFER_SIZE = 512;
-  constexpr size_t      MAX_AUDIO_POOL_BYTES = 100 * 1024; 
-  constexpr size_t      AUDIO_POOL_SIZE = MAX_AUDIO_POOL_BYTES / (MQTT_AUDIO_CHUNK_SIZE + 6);  
-  constexpr uint16_t    FRAGMENT_SENTINEL = 0xFFFF;
+  namespace ble {
+    constexpr const char* DEVICE_NAME       = "bar";
+    constexpr const char* SERVICE_UUID      = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
+    constexpr const char* CHAR_UUID_TX      = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+    constexpr const int   PING_INTERVAL_MS  = 1000;
+    constexpr const int   PUBLISH_INTERVAL_MS = 50; 
+    constexpr uint16_t    CONN_MIN_INTERVAL = 16;  
+    constexpr uint16_t    CONN_MAX_INTERVAL = 32;   
+    constexpr uint16_t    CONN_LATENCY      = 0;
+    constexpr uint16_t    CONN_TIMEOUT      = 600; 
+  }
 }
