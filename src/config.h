@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // Set to 0 to disable all debug serial prints for production (speeds up program significantly)
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 
 #if DEBUG_MODE
   #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
