@@ -23,8 +23,8 @@ public:
 
 private:
   union {
-    int32_t raw32[config::MIC_SAMPLE_BATCH_SIZE];
-    int16_t samples[config::MIC_SAMPLE_BATCH_SIZE];
+    int32_t raw32[config::mic::SAMPLE_BATCH_SIZE];
+    int16_t samples[config::mic::SAMPLE_BATCH_SIZE];
   };
   size_t numSamples;
 };

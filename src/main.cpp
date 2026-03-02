@@ -3,7 +3,7 @@
 #include "sensors/mic_sensor.h"
 #include "sensors/button_sensor.h"
 #include "sensors/hall_sensor.h"
-#include "comms/mqtt_client.h"
+#include "comms/ble_server.h"
 #include "tasks/audio_task.h"
 #include "tasks/hall_task.h"
 
@@ -16,17 +16,16 @@ unsigned long recordStartMs = 0;
 
 // --- Peripherals ---
 
-MicSensor     mic;
-ButtonSensor  button;
-HallSensor    hall;
-MqttClient    mqtt(config::MQTT_BROKER, config::MQTT_PORT, config::MQTT_CLIENT_ID,
-                   config::MQTT_PUBLISH_INTERVAL_MS, config::MQTT_USERNAME, config::MQTT_PASSWORD);
+MicSensor    mic;
+ButtonSensor button;
+HallSensor   hall;
+BleServer    ble;
 
 // --- Core 0 tasks ---
 
-AudioTask     audioTask;
-HallTask      hallTask;
-SemaphoreHandle_t mqttMutex;
+AudioTask         audioTask;
+HallTask          hallTask;
+SemaphoreHandle_t bleMutex;
 
 // --- Core 1: Poll sensors, run state machine ---
 
@@ -41,29 +40,25 @@ void setup()
   hall.setup();
 
   // LED setup
-  pinMode(config::RECORDING_LED_PIN, OUTPUT);
-  digitalWrite(config::RECORDING_LED_PIN, LOW);
-  for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; i++)
+  pinMode(config::button::LED_PIN, OUTPUT);
+  digitalWrite(config::button::LED_PIN, LOW);
+  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; i++)
   {
-    pinMode(config::HALL_LED_PINS[i], OUTPUT);
-    digitalWrite(config::HALL_LED_PINS[i], LOW);
+    pinMode(config::hall::LED_PINS[i], OUTPUT);
+    digitalWrite(config::hall::LED_PINS[i], LOW);
   }
 
   // Task setup (allocate pools and queues)
   audioTask.setup();
   hallTask.setup();
 
-  // Connect WiFi + MQTT (safe: Core 0 tasks don't exist yet)
-  while (!mqtt.connect(config::WIFI_SSID, config::WIFI_PASSWORD))
-  {
-    DEBUG_PRINTLN("MQTT connect failed. Retrying in 5s...");
-    delay(5000);
-  }
+  // Start BLE advertising
+  ble.begin();
 
   // Launch Core 0 publish tasks (hall at higher priority to interleave with audio)
-  mqttMutex = xSemaphoreCreateMutex();
-  audioTask.startPublisher(mqtt, mqttMutex);
-  hallTask.startPublisher(mqtt, mqttMutex);
+  bleMutex = xSemaphoreCreateMutex();
+  audioTask.startPublisher(ble, bleMutex);
+  hallTask.startPublisher(ble, bleMutex);
 
   DEBUG_PRINTLN("Ready. Press button to start recording.");
 }
@@ -85,9 +80,9 @@ void loop()
     int closestHall = hall.getClosestHall();
 
     // Actuate hall LEDs
-    for (size_t i = 0; i < config::HALL_SENSOR_PINS_LEN; i++)
+    for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; i++)
     {
-      digitalWrite(config::HALL_LED_PINS[i], i == closestHall);
+      digitalWrite(config::hall::LED_PINS[i], i == (size_t)closestHall);
     }
 
     hallTask.update(closestHall);
@@ -100,17 +95,17 @@ void loop()
     {
       audioTask.beginRecording(mic);
       recordStartMs = millis();
-      digitalWrite(config::RECORDING_LED_PIN, HIGH);
+      digitalWrite(config::button::LED_PIN, HIGH);
       DEBUG_PRINTF("Recording started (message_id=%u)\n", audioTask.getMessageId());
       state = State::RECORDING;
     }
     break;
 
   case State::RECORDING:
-    if (button.wasPressed() || (now - recordStartMs >= config::RECORDING_DURATION_MS))
+    if (button.wasPressed() || (now - recordStartMs >= (unsigned long)config::button::DURATION_MS))
     {
       audioTask.endRecording();
-      digitalWrite(config::RECORDING_LED_PIN, LOW);
+      digitalWrite(config::button::LED_PIN, LOW);
       DEBUG_PRINTLN("Recording stopped.");
       state = State::IDLE;
     }

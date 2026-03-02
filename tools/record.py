@@ -1,8 +1,9 @@
 """
-MQTT Audio Receiver - Debug tool for firmware record & publish testing.
+BLE Audio Receiver - Debug tool for firmware record & publish testing.
 
-Subscribes to glove/audio topic, collects audio fragments by messageId,
-and saves completed recordings as .wav files.
+Connects to the ESP32 "bar" device over BLE, subscribes to audio notifications
+on the NUS TX characteristic, collects audio fragments by messageId, and saves
+completed recordings as .wav files.
 
 Protocol:
     Bytes 0-1: messageId (uint16 LE)
@@ -10,122 +11,82 @@ Protocol:
     Bytes 4+:  Audio data (16-bit PCM, 16kHz mono)
 """
 
-import ssl
+import asyncio
 import struct
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
 
-import paho.mqtt.client as mqtt
+from bleak import BleakClient, BleakScanner
 
-# MQTT Configuration (matches firmware config.h)
-MQTT_BROKER = "192.168.1.4"
-MQTT_PORT = 8883
-MQTT_USERNAME = "test"
-MQTT_PASSWORD = "test"
-MQTT_CLIENT_ID = "python_audio_receiver"
-MQTT_AUDIO_TOPIC = "audio"
+# BLE Configuration (matches firmware config.h)
+DEVICE_NAME     = "bar"
+SERVICE_UUID    = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+CHAR_UUID_TX    = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-# Audio Configuration
-SAMPLE_RATE = 16000
-SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
-CHANNELS = 1
-
-# Sentinel value indicating end of recording
+# Audio Configuration (matches firmware config.h)
+SAMPLE_RATE     = 8000
+SAMPLE_WIDTH    = 2       # 16-bit = 2 bytes
+CHANNELS        = 1
 FRAGMENT_SENTINEL = 0xFFFF
 
 # Output directory for recordings
 OUTPUT_DIR = Path(__file__).parent / "recordings"
 
 
+TIMEOUT_S = 2.0  # save recording if no new fragments arrive within this many seconds
+
+
 class AudioReceiver:
     def __init__(self):
-        # Dict to store fragments: {messageId: {fragmentId: audio_data}}
+        # {messageId: {fragmentId: audio_data}}
         self.recordings: dict[int, dict[int, bytes]] = {}
-        self.client = mqtt.Client(
-            client_id=MQTT_CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        )
-
-        # Setup callbacks
-        self.client.on_connect = self._on_connect
-        self.client.on_message = self._on_message
-        self.client.on_disconnect = self._on_disconnect
-
-        # Setup TLS (insecure for dev - matches firmware)
-        self.client.tls_set(cert_reqs=ssl.CERT_NONE)
-        self.client.tls_insecure_set(True)
-
-        # Auth
-        self.client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-
-        # Ensure output directory exists
+        # {messageId: timestamp of last received fragment}
+        self.last_rx: dict[int, float] = {}
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    def _on_connect(self, client, userdata, flags, reason_code, properties):
-        if reason_code == 0:
-            print(f"Connected to MQTT broker: {MQTT_BROKER}:{MQTT_PORT}")
-            client.subscribe(MQTT_AUDIO_TOPIC)
-            print(f"Subscribed to: {MQTT_AUDIO_TOPIC}")
-            print("Waiting for audio fragments...")
-        else:
-            print(f"Connection failed with code: {reason_code}")
-
-    def _on_disconnect(self, client, userdata, flags, reason_code, properties):
-        print(f"Disconnected from broker (code: {reason_code})")
-
-    def _on_message(self, client, userdata, msg):
-        payload = msg.payload
-
+    def _on_notification(self, _handle: int, payload: bytearray):
         if len(payload) < 4:
             print(f"Invalid fragment: payload too short ({len(payload)} bytes)")
             return
 
-        # Parse header (little-endian uint16 for messageId and fragmentId)
         message_id, fragment_id = struct.unpack("<HH", payload[:4])
-        audio_data = payload[4:]
+        audio_data = bytes(payload[4:])
 
-        # Check for sentinel (end of recording)
         if fragment_id == FRAGMENT_SENTINEL:
             print(f"[MSG {message_id}] Received end sentinel")
             self._save_recording(message_id)
             return
 
-        # Store fragment
         if message_id not in self.recordings:
             self.recordings[message_id] = {}
             print(f"[MSG {message_id}] New recording started")
 
         self.recordings[message_id][fragment_id] = audio_data
+        self.last_rx[message_id] = time.monotonic()
 
-        # Debug: print checksum and first 8 audio bytes (as signed int8)
         checksum = sum(audio_data)
-        first8 = [int.from_bytes(bytes([b]), 'little', signed=True) for b in audio_data[:8]]
-        print(
-            f"RX frag={fragment_id} len={len(audio_data)} sum={checksum} first8={first8}"
-        )
+        first8 = [int.from_bytes(bytes([b]), "little", signed=True) for b in audio_data[:8]]
+        print(f"RX frag={fragment_id} len={len(audio_data)} sum={checksum} first8={first8}")
 
     def _save_recording(self, message_id: int):
         if message_id not in self.recordings:
             print(f"[MSG {message_id}] No fragments to save")
             return
 
+        self.last_rx.pop(message_id, None)
         fragments = self.recordings.pop(message_id)
-
         if not fragments:
             print(f"[MSG {message_id}] Empty recording, skipping")
             return
 
-        # Sort fragments by fragmentId and concatenate audio data
-        sorted_fragment_ids = sorted(fragments.keys())
-        audio_data = b"".join(fragments[fid] for fid in sorted_fragment_ids)
+        sorted_ids = sorted(fragments.keys())
+        audio_data = b"".join(fragments[fid] for fid in sorted_ids)
 
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = OUTPUT_DIR / f"recording_{message_id}_{timestamp}.wav"
 
-        # Write WAV file
         with wave.open(str(filename), "wb") as wav_file:
             wav_file.setnchannels(CHANNELS)
             wav_file.setsampwidth(SAMPLE_WIDTH)
@@ -135,23 +96,47 @@ class AudioReceiver:
         duration_ms = (len(audio_data) / SAMPLE_WIDTH) / SAMPLE_RATE * 1000
         print(
             f"[MSG {message_id}] Saved: {filename.name} "
-            f"({len(sorted_fragment_ids)} fragments, {len(audio_data)} bytes, {duration_ms:.0f}ms)"
+            f"({len(sorted_ids)} fragments, {len(audio_data)} bytes, {duration_ms:.0f}ms)"
         )
 
-    def run(self):
-        print(f"Connecting to {MQTT_BROKER}:{MQTT_PORT}...")
-        self.client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+    async def _timeout_watcher(self):
+        while True:
+            await asyncio.sleep(0.5)
+            now = time.monotonic()
+            timed_out = [mid for mid, ts in self.last_rx.items() if now - ts >= TIMEOUT_S]
+            for mid in timed_out:
+                print(f"[MSG {mid}] Timeout — saving without sentinel")
+                self._save_recording(mid)
 
-        try:
-            self.client.loop_forever()
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-            self.client.disconnect()
+    async def run(self):
+        print(f"Scanning for '{DEVICE_NAME}'...")
+        device = await BleakScanner.find_device_by_name(DEVICE_NAME)
+        if device is None:
+            print(f"Device '{DEVICE_NAME}' not found. Is it advertising?")
+            return
+
+        print(f"Found {device.name} [{device.address}]. Connecting...")
+        async with BleakClient(device) as client:
+            print("Connected. Subscribing to audio notifications...")
+            await client.start_notify(CHAR_UUID_TX, self._on_notification)
+            print("Waiting for audio fragments... (Ctrl+C to stop)")
+            watcher = asyncio.create_task(self._timeout_watcher())
+            try:
+                await asyncio.get_event_loop().create_future()  # run until cancelled
+            except asyncio.CancelledError:
+                pass
+            finally:
+                watcher.cancel()
+                await client.stop_notify(CHAR_UUID_TX)
+                print("Disconnected.")
 
 
 def main():
     receiver = AudioReceiver()
-    receiver.run()
+    try:
+        asyncio.run(receiver.run())
+    except KeyboardInterrupt:
+        print("\nShutting down...")
 
 
 if __name__ == "__main__":

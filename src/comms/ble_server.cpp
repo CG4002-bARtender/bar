@@ -21,6 +21,7 @@ public:
 void BleServer::begin()
 {
   NimBLEDevice::init(config::ble::DEVICE_NAME);
+  NimBLEDevice::setMTU(517);  // request max MTU; central must respond, forcing negotiation above OS default
 
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new BleServerCallbacks(this));
