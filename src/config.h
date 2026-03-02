@@ -38,7 +38,8 @@ namespace config
 
   namespace button {
     constexpr int PIN         = 22;
-    constexpr int LED_PIN     = 2;
+    constexpr int GREEN_LED_PIN     = 2;
+    constexpr int RED_LED_PIN = 21;
     constexpr int INTERVAL_MS = 33;
     constexpr int DURATION_MS = 3000;
   }
@@ -47,10 +48,11 @@ namespace config
     constexpr int    SENSOR_PINS[]  = {36, 39, 34, 35, 15};
     constexpr int    LED_PINS[]     = {25, 26, 27, 13, 5};
     constexpr size_t SENSOR_PINS_LEN = sizeof(SENSOR_PINS) / sizeof(SENSOR_PINS[0]);
-    constexpr int    INTERVAL_MS    = 400;
+    constexpr int    INTERVAL_MS        = 400;
+    constexpr int    OVERSAMPLE_COUNT   = 16;   // ADC reads averaged per sample to reject BLE RF glitches
     constexpr int    CALIBRATION_ROUNDS = 30;
     constexpr int    CALIBRATION_DELAY  = 200;
-    constexpr int    NOISE_THRESHOLD    = 30;
+    constexpr int    NOISE_THRESHOLD    = 300;
   }
 
   namespace audio {
@@ -63,11 +65,21 @@ namespace config
     constexpr const char* DEVICE_NAME       = "bar";
     constexpr const char* SERVICE_UUID      = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
     constexpr const char* CHAR_UUID_TX      = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+    constexpr const char* CHAR_UUID_RX      = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
     constexpr int         PING_INTERVAL_MS  = 1000;
     constexpr int         PUBLISH_INTERVAL_MS = 50;
     constexpr uint16_t    CONN_MIN_INTERVAL = 16;
     constexpr uint16_t    CONN_MAX_INTERVAL = 16;
     constexpr uint16_t    CONN_LATENCY      = 0;
     constexpr uint16_t    CONN_TIMEOUT      = 600;
+  }
+
+  namespace feedback {
+    constexpr unsigned long WAIT_BLINK_MS   = 300;   // green slow blink while awaiting ACK
+    constexpr unsigned long ACK_BLINK_MS    = 100;   // green fast blink on ACK
+    constexpr unsigned long ACK_DURATION_MS = 1000;  // total ACK flash window
+    constexpr unsigned long NACK_BLINK_MS   = 200;   // red half-period on NACK
+    constexpr int           NACK_BLINK_COUNT = 3;
+    constexpr unsigned long ACK_TIMEOUT_MS  = 1000;  // default to NACK if no response within this window
   }
 }

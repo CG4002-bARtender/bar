@@ -8,7 +8,11 @@ completed recordings as .wav files.
 Protocol:
     Bytes 0-1: messageId (uint16 LE)
     Bytes 2-3: fragmentId (uint16 LE) - 0xFFFF = end sentinel
-    Bytes 4+:  Audio data (16-bit PCM, 16kHz mono)
+    Bytes 4+:  Audio data (16-bit PCM, 8kHz mono)
+
+After saving, sends ACK (0x01) or NACK (0x00) to the RX characteristic:
+    ACK  if audio data is >= EXPECTED_MIN_BYTES (i.e. recording was long enough)
+    NACK otherwise
 """
 
 import asyncio
@@ -24,6 +28,7 @@ from bleak import BleakClient, BleakScanner
 DEVICE_NAME     = "bar"
 SERVICE_UUID    = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 CHAR_UUID_TX    = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+CHAR_UUID_RX    = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 
 # Audio Configuration (matches firmware config.h)
 SAMPLE_RATE     = 8000
@@ -31,9 +36,14 @@ SAMPLE_WIDTH    = 2       # 16-bit = 2 bytes
 CHANNELS        = 1
 FRAGMENT_SENTINEL = 0xFFFF
 
+# ACK if audio covers at least this many bytes (2 seconds of audio as floor)
+EXPECTED_MIN_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * 2   # 32000 bytes
+
+ACK  = bytes([0x01])
+NACK = bytes([0x00])
+
 # Output directory for recordings
 OUTPUT_DIR = Path(__file__).parent / "recordings"
-
 
 TIMEOUT_S = 2.0  # save recording if no new fragments arrive within this many seconds
 
@@ -44,9 +54,16 @@ class AudioReceiver:
         self.recordings: dict[int, dict[int, bytes]] = {}
         # {messageId: timestamp of last received fragment}
         self.last_rx: dict[int, float] = {}
+        self._client: BleakClient | None = None
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def _on_notification(self, _handle: int, payload: bytearray):
+        if len(payload) == 1:
+            slot = payload[0]
+            label = f"A{slot}" if slot != 0xFF else "none"
+            print(f"[HALL] closest={label}")
+            return
+
         if len(payload) < 4:
             print(f"Invalid fragment: payload too short ({len(payload)} bytes)")
             return
@@ -56,7 +73,7 @@ class AudioReceiver:
 
         if fragment_id == FRAGMENT_SENTINEL:
             print(f"[MSG {message_id}] Received end sentinel")
-            self._save_recording(message_id)
+            asyncio.create_task(self._handle_sentinel(message_id))
             return
 
         if message_id not in self.recordings:
@@ -70,16 +87,24 @@ class AudioReceiver:
         first8 = [int.from_bytes(bytes([b]), "little", signed=True) for b in audio_data[:8]]
         print(f"RX frag={fragment_id} len={len(audio_data)} sum={checksum} first8={first8}")
 
-    def _save_recording(self, message_id: int):
+    async def _handle_sentinel(self, message_id: int):
+        ok = self._save_recording(message_id)
+        if self._client and self._client.is_connected:
+            payload = ACK if ok else NACK
+            await self._client.write_gatt_char(CHAR_UUID_RX, payload)
+            print(f"[MSG {message_id}] Sent {'ACK' if ok else 'NACK'}")
+
+    def _save_recording(self, message_id: int) -> bool:
+        """Save recording to .wav. Returns True (ACK) if byte count meets minimum."""
         if message_id not in self.recordings:
             print(f"[MSG {message_id}] No fragments to save")
-            return
+            return False
 
         self.last_rx.pop(message_id, None)
         fragments = self.recordings.pop(message_id)
         if not fragments:
             print(f"[MSG {message_id}] Empty recording, skipping")
-            return
+            return False
 
         sorted_ids = sorted(fragments.keys())
         audio_data = b"".join(fragments[fid] for fid in sorted_ids)
@@ -94,10 +119,13 @@ class AudioReceiver:
             wav_file.writeframes(audio_data)
 
         duration_ms = (len(audio_data) / SAMPLE_WIDTH) / SAMPLE_RATE * 1000
+        ok = len(audio_data) >= EXPECTED_MIN_BYTES
         print(
             f"[MSG {message_id}] Saved: {filename.name} "
-            f"({len(sorted_ids)} fragments, {len(audio_data)} bytes, {duration_ms:.0f}ms)"
+            f"({len(sorted_ids)} fragments, {len(audio_data)} bytes, {duration_ms:.0f}ms) "
+            f"→ {'ACK' if ok else 'NACK'}"
         )
+        return ok
 
     async def _timeout_watcher(self):
         while True:
@@ -117,6 +145,7 @@ class AudioReceiver:
 
         print(f"Found {device.name} [{device.address}]. Connecting...")
         async with BleakClient(device) as client:
+            self._client = client
             print("Connected. Subscribing to audio notifications...")
             await client.start_notify(CHAR_UUID_TX, self._on_notification)
             print("Waiting for audio fragments... (Ctrl+C to stop)")
@@ -128,6 +157,7 @@ class AudioReceiver:
             finally:
                 watcher.cancel()
                 await client.stop_notify(CHAR_UUID_TX)
+                self._client = None
                 print("Disconnected.")
 
 

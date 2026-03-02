@@ -19,7 +19,7 @@ void HallSensor::read()
   for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
     offsetValues[i] = analogRead(config::hall::SENSOR_PINS[i]) - baselineValues[i];
-    if (offsetValues[i] > largestSeen && offsetValues[i] > 30) {
+    if (offsetValues[i] > largestSeen && offsetValues[i] > config::hall::NOISE_THRESHOLD) {
       closestHall = i;
       largestSeen = offsetValues[i];
     }
@@ -31,7 +31,7 @@ void HallSensor::print()
   DEBUG_PRINTF("=========== Hall SENSORS ===========\n");
   for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
-    DEBUG_PRINTF("[Hall A%d]: %+d\n", i, offsetValues[i] + baselineValues[i]);
+    DEBUG_PRINTF("[Hall A%d]: %+d\n", i, offsetValues[i]);
   }
   DEBUG_PRINTF(closestHall == -1 ? "No magnet detected!\n" : "Closest Hall Sensor: A%d\n", closestHall);
   DEBUG_PRINTF("=====================================\n");
