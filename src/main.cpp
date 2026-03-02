@@ -6,15 +6,11 @@
 #include "sensors/button_sensor.h"
 #include "sensors/hall_sensor.h"
 
-// ── Tuneable ─────────────────────────────────────────────────────────────────
-constexpr unsigned long TX_INTERVAL_MS = 32;
-
 // ── Audio ring buffer (SPSC) ──────────────────────────────────────────────────
-constexpr size_t MAX_FRAGS = 100;
-static uint8_t ringBuf[MAX_FRAGS][4 + config::audio::CHUNK_SIZE];
-static size_t  ringBytes[MAX_FRAGS];
+static uint8_t ringBuf[config::audio::MAX_FRAGS][4 + config::audio::CHUNK_SIZE];
+static size_t  ringBytes[config::audio::MAX_FRAGS];
 
-static volatile size_t head = 0;   // written by Core 0 capture task
+static volatile size_t head = 0;   // written by Core 0 captureTask
 static          size_t tail = 0;   // written by Core 1 loop()
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
@@ -55,6 +51,7 @@ class ServerCB : public NimBLEServerCallbacks
 enum class State { IDLE, RECORDING, DRAINING, WAITING_ACK, ACK_FLASH, NACK_FLASH };
 static volatile State state = State::IDLE;
 
+// Transmission states
 static uint16_t      msgId    = 0;
 static unsigned long recStart = 0;
 static unsigned long lastTxMs = 0;
@@ -66,7 +63,7 @@ static unsigned long waitAckStart = 0;   // WAITING_ACK entry timestamp
 static int           nackCount    = 0;   // NACK half-period counter
 
 // ── Sensors ───────────────────────────────────────────────────────────────────
-static MicSensor    mic;
+static MicSensor    mic;  
 static ButtonSensor button;
 static HallSensor   hall;
 static int          activeLedIndex = -1;
@@ -89,6 +86,22 @@ static void allLedsOff()
   digitalWrite(config::button::RED_LED_PIN,   LOW);
 }
 
+static void enterAckFlash(unsigned long now)
+{
+  allLedsOff();
+  flashStart  = now;
+  ledToggleMs = now;
+  state = State::ACK_FLASH;
+}
+
+static void enterNackFlash(unsigned long now)
+{
+  allLedsOff();
+  nackCount   = 0;
+  ledToggleMs = now;
+  state = State::NACK_FLASH;
+}
+
 // ── Capture task (Core 0) ─────────────────────────────────────────────────────
 static void captureTask(void*)
 {
@@ -106,7 +119,7 @@ static void captureTask(void*)
 
     while (state == State::RECORDING)
     {
-      if (head >= MAX_FRAGS)
+      if (head >= config::audio::MAX_FRAGS)
       {
         DEBUG_PRINTLN("[CAP] Buffer full — stopping early");
         state = State::DRAINING;
@@ -134,29 +147,9 @@ static void captureTask(void*)
   }
 }
 
-// ── Arduino entry points ─────────────────────────────────────────────────────
-void setup()
+// ── BLE setup ─────────────────────────────────────────────────────────────────
+static void setupBLE()
 {
-  DEBUG_INIT();
-  DEBUG_PRINTLN("\n=== Bar Firmware ===");
-
-  // I2S mic
-  mic.setup();
-  button.setup();
-  hall.setup();
-
-  // LEDs
-  pinMode(config::button::GREEN_LED_PIN, OUTPUT);
-  pinMode(config::button::RED_LED_PIN,   OUTPUT);
-  
-  allLedsOff();
-  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; i++)
-  {
-    pinMode(config::hall::LED_PINS[i], OUTPUT);
-    digitalWrite(config::hall::LED_PINS[i], LOW);
-  }
-
-  // BLE
   NimBLEDevice::init(config::ble::DEVICE_NAME);
   NimBLEDevice::setMTU(517);
   NimBLEServer* srv = NimBLEDevice::createServer();
@@ -170,7 +163,79 @@ void setup()
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(config::ble::SERVICE_UUID);
   adv->start();
+}
 
+// ── Hall sensor poll + publish ────────────────────────────────────────────────
+static void pollHall(unsigned long now)
+{
+  if (state != State::IDLE || !hall.shouldRead(now)) return;
+
+  hall.read();
+  hall.print();
+  int closest = hall.getClosestHall();
+
+  if (closest != activeLedIndex)
+  {
+    if (activeLedIndex >= 0) digitalWrite(config::hall::LED_PINS[activeLedIndex], LOW);
+    if (closest      >= 0) digitalWrite(config::hall::LED_PINS[closest],          HIGH);
+    activeLedIndex = closest;
+  }
+
+  uint8_t hallByte = (closest >= 0) ? (uint8_t)closest : 0xFF;
+  sendRaw(&hallByte, 1);
+}
+
+// ── Audio TX (RECORDING and DRAINING states) ──────────────────────────────────
+static void txAudio(unsigned long now)
+{
+  if (state != State::RECORDING && state != State::DRAINING) return;
+
+  if (now - lastTxMs >= config::audio::TX_INTERVAL_MS && tail < head)
+  {
+    sendRaw(ringBuf[tail], ringBytes[tail]);
+    DEBUG_PRINTF("[TX] frag=%u len=%u queued=%u\n",
+                 (unsigned)tail,
+                 (unsigned)(ringBytes[tail] - 4),
+                 (unsigned)(head - tail));
+    tail++;
+    lastTxMs = now;
+  }
+
+  if (state == State::DRAINING && tail >= head)
+  {
+    static uint8_t sentinelBuf[4];
+    writeHeader(sentinelBuf, msgId, config::audio::FRAGMENT_SENTINEL);
+    sendRaw(sentinelBuf, 4);
+    DEBUG_PRINTF("[TX] Sentinel sent. %u total fragments.\n", (unsigned)tail);
+    ledToggleMs  = now;
+    waitAckStart = now;
+    state = State::WAITING_ACK;
+  }
+}
+
+// ── Arduino entry points ──────────────────────────────────────────────────────
+void setup()
+{
+  DEBUG_INIT();
+  DEBUG_PRINTLN("\n=== Bar Firmware ===");
+
+  mic.setup();
+  button.setup();
+  hall.setup();
+
+  // Status LEDs
+  pinMode(config::button::GREEN_LED_PIN, OUTPUT);
+  pinMode(config::button::RED_LED_PIN,   OUTPUT);
+  allLedsOff();
+
+  // Hall indicator LEDs
+  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; i++)
+  {
+    pinMode(config::hall::LED_PINS[i], OUTPUT);
+    digitalWrite(config::hall::LED_PINS[i], LOW);
+  }
+
+  setupBLE();
   xTaskCreatePinnedToCore(captureTask, "capture", 8192, nullptr, 1, nullptr, 0);
 
   DEBUG_PRINTLN("Ready. Press button to record.");
@@ -180,26 +245,8 @@ void loop()
 {
   unsigned long now = millis();
 
-  // ── Sensor polling ────────────────────────────────────────────────────────
   if (button.shouldRead(now)) button.read();
-
-  // Hall: only poll and publish when idle (paused during recording/feedback)
-  if (state == State::IDLE && hall.shouldRead(now))
-  {
-    hall.read();
-    hall.print();
-    int closest = hall.getClosestHall();
-
-    if (closest != activeLedIndex)
-    {
-      if (activeLedIndex >= 0) digitalWrite(config::hall::LED_PINS[activeLedIndex], LOW);
-      if (closest      >= 0) digitalWrite(config::hall::LED_PINS[closest],          HIGH);
-      activeLedIndex = closest;
-    }
-
-    uint8_t hallByte = (closest >= 0) ? (uint8_t)closest : 0xFF;
-    sendRaw(&hallByte, 1);
-  }
+  pollHall(now);
 
   // ── State machine ─────────────────────────────────────────────────────────
   switch (state)
@@ -207,11 +254,10 @@ void loop()
   case State::IDLE:
     if (button.wasPressed())
     {
-      // Extinguish hall LEDs while recording
       if (activeLedIndex >= 0) digitalWrite(config::hall::LED_PINS[activeLedIndex], LOW);
       activeLedIndex = -1;
 
-      head = 0;  tail = 0;
+      head = 0; tail = 0;
       pendingAck = -1;
       msgId++;
       recStart = now;
@@ -232,47 +278,34 @@ void loop()
     break;
 
   case State::DRAINING:
-    break;  // handled in audio TX section below
+    break;  // handled in txAudio()
 
   case State::WAITING_ACK:
-    // Slow green blink
-    if (now - ledToggleMs >= config::feedback::WAIT_BLINK_MS)
-    {
-      digitalWrite(config::button::GREEN_LED_PIN,
-                   !digitalRead(config::button::GREEN_LED_PIN));
-      ledToggleMs = now;
-    }
-    // Timeout: treat as NACK if no response within ACK_TIMEOUT_MS
-    if (now - waitAckStart >= config::feedback::ACK_TIMEOUT_MS && pendingAck == -1)
-    {
-      DEBUG_PRINTLN("[ACK] timeout — treating as NACK");
-      allLedsOff();
-      nackCount   = 0;
-      ledToggleMs = now;
-      state = State::NACK_FLASH;
-      break;
-    }
-    // Check for incoming ACK/NACK
     if (pendingAck == 0x01)
     {
       DEBUG_PRINTLN("[ACK] received");
-      allLedsOff();
-      flashStart  = now;
-      ledToggleMs = now;
-      state = State::ACK_FLASH;
+      enterAckFlash(now);
     }
     else if (pendingAck == 0x00)
     {
       DEBUG_PRINTLN("[NACK] received");
-      allLedsOff();
-      nackCount   = 0;
+      enterNackFlash(now);
+    }
+    else if (now - waitAckStart >= config::feedback::ACK_TIMEOUT_MS)
+    {
+      DEBUG_PRINTLN("[ACK] timeout — treating as NACK");
+      enterNackFlash(now);
+    }
+    else if (now - ledToggleMs >= config::feedback::WAIT_BLINK_MS)
+    {
+      // Slow green blink while waiting
+      digitalWrite(config::button::GREEN_LED_PIN,
+                   !digitalRead(config::button::GREEN_LED_PIN));
       ledToggleMs = now;
-      state = State::NACK_FLASH;
     }
     break;
 
   case State::ACK_FLASH:
-    // Fast green blink for ACK_DURATION_MS
     if (now - flashStart >= config::feedback::ACK_DURATION_MS)
     {
       allLedsOff();
@@ -287,7 +320,6 @@ void loop()
     break;
 
   case State::NACK_FLASH:
-    // Blink red LED NACK_BLINK_COUNT times (each blink = on + off = 2 half-periods)
     if (now - ledToggleMs >= config::feedback::NACK_BLINK_MS)
     {
       nackCount++;
@@ -302,29 +334,5 @@ void loop()
     break;
   }
 
-  // ── Audio TX (active during RECORDING and DRAINING) ───────────────────────
-  if (state == State::RECORDING || state == State::DRAINING)
-  {
-    if (now - lastTxMs >= TX_INTERVAL_MS && tail < head)
-    {
-      sendRaw(ringBuf[tail], ringBytes[tail]);
-      DEBUG_PRINTF("[TX] frag=%u len=%u queued=%u\n",
-                   (unsigned)tail,
-                   (unsigned)(ringBytes[tail] - 4),
-                   (unsigned)(head - tail));
-      tail++;
-      lastTxMs = now;
-    }
-
-    if (state == State::DRAINING && tail >= head)
-    {
-      static uint8_t sentinelBuf[4];
-      writeHeader(sentinelBuf, msgId, config::audio::FRAGMENT_SENTINEL);
-      sendRaw(sentinelBuf, 4);
-      DEBUG_PRINTF("[TX] Sentinel sent. %u total fragments.\n", (unsigned)tail);
-      ledToggleMs  = now;
-      waitAckStart = now;
-      state = State::WAITING_ACK;
-    }
-  }
+  txAudio(now);
 }

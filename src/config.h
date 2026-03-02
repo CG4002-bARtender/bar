@@ -56,9 +56,10 @@ namespace config
   }
 
   namespace audio {
-    constexpr size_t   CHUNK_SIZE        = 500;   // bytes per BLE fragment (MTU 517 - 3 ATT - 4 header = 510, using 500 for safety)
-    constexpr size_t   POOL_SIZE         = 8;
-    constexpr uint16_t FRAGMENT_SENTINEL = 0xFFFF;
+    constexpr size_t        CHUNK_SIZE        = 500;   // bytes per BLE fragment (MTU 517 - 3 ATT - 4 header = 510, using 500 for safety)
+    constexpr size_t        MAX_FRAGS         = 100;   // ring buffer depth (~3s at 8kHz)
+    constexpr unsigned long TX_INTERVAL_MS    = 32;    // ms between BLE fragment sends
+    constexpr uint16_t      FRAGMENT_SENTINEL = 0xFFFF;
   }
 
   namespace ble {
