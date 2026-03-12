@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // Set to 0 to disable all debug serial prints for production (speeds up program significantly)
-#define DEBUG_MODE 0
+#define DEBUG_MODE 1
 
 #if DEBUG_MODE
   #define DEBUG_INIT()        Serial.begin(config::BAUD_RATE)
@@ -28,7 +28,7 @@ namespace config
 
   namespace mic {
     constexpr int WS_PIN            = 17;
-    constexpr int SCK_PIN           = 14;
+    constexpr int SCK_PIN           = D7;
     constexpr int SD_PIN            = 16;
     constexpr int SAMPLE_RATE       = 8000;
     constexpr int SAMPLE_BATCH_SIZE = 250;  // 250 int16 = 500 bytes = one BLE notify per read
@@ -37,27 +37,27 @@ namespace config
   }
 
   namespace button {
-    constexpr int PIN         = 22;
-    constexpr int GREEN_LED_PIN     = 2;
-    constexpr int RED_LED_PIN = 21;
-    constexpr int INTERVAL_MS = 33;
-    constexpr int DURATION_MS = 3000;
+    constexpr int PIN               = D4;
+    constexpr int GREEN_LED_PIN     = D3;
+    constexpr int RED_LED_PIN       = D2;
+    constexpr int INTERVAL_MS       = 33;
+    constexpr int DURATION_MS       = 3000;
   }
 
   namespace hall {
-    constexpr int    SENSOR_PINS[]  = {36, 39, 34, 35, 15};
-    constexpr int    LED_PINS[]     = {25, 26, 27, 13, 5};
+    constexpr int    SENSOR_PINS[]  = {A0, A1};
+    constexpr int    LED_PINS[]     = {D2, D3};
     constexpr size_t SENSOR_PINS_LEN = sizeof(SENSOR_PINS) / sizeof(SENSOR_PINS[0]);
     constexpr int    INTERVAL_MS        = 400;
     constexpr int    OVERSAMPLE_COUNT   = 16;   // ADC reads averaged per sample to reject BLE RF glitches
     constexpr int    CALIBRATION_ROUNDS = 30;
     constexpr int    CALIBRATION_DELAY  = 200;
-    constexpr int    NOISE_THRESHOLD    = 300;
+    constexpr int    NOISE_THRESHOLD    = 100;
   }
 
   namespace audio {
     constexpr size_t        CHUNK_SIZE        = 500;   // bytes per BLE fragment (MTU 517 - 3 ATT - 4 header = 510, using 500 for safety)
-    constexpr size_t        MAX_FRAGS         = 100;   // ring buffer depth (~3s at 8kHz)
+    constexpr size_t        MAX_FRAGS         =          100;   // ring buffer depth (~3s at 8kHz)
     constexpr unsigned long TX_INTERVAL_MS    = 32;    // ms between BLE fragment sends
     constexpr uint16_t      FRAGMENT_SENTINEL = 0xFFFF;
   }

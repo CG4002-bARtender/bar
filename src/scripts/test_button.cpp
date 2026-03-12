@@ -18,6 +18,9 @@ void loop()
 
   if (button.shouldRead(now)) {
     button.read();
-    button.print();
+    
+    if (button.wasPressed()) {
+      button.print();
+    }
   }
 }
