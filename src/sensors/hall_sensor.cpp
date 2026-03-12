@@ -14,6 +14,8 @@ void HallSensor::setup()
 
 void HallSensor::read()
 {
+  prevClosestHall = closestHall;
+  
   closestHall = -1;
   int largestSeen = 0;
   for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)

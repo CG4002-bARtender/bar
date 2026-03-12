@@ -1,269 +1,219 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
-#include <NimBLEDevice.h>
+#include <atomic>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include "config.h"
+
 #include "sensors/mic_sensor.h"
 #include "sensors/button_sensor.h"
 #include "sensors/hall_sensor.h"
+#include "comms/mqtt_client.h"
+#include "actuators/hall_led.h"
+#include "actuators/mic_led.h"
 
-// ── Audio ring buffer (SPSC) ──────────────────────────────────────────────────
-static uint8_t ringBuf[config::audio::MAX_FRAGS][4 + config::audio::CHUNK_SIZE];
-static size_t  ringBytes[config::audio::MAX_FRAGS];
+ButtonSensor button;
+HallSensor   hall;
+MicSensor    mic;
 
-static volatile size_t head = 0;   // written by Core 0 captureTask
-static          size_t tail = 0;   // written by Core 1 loop()
+MqttClient mqtt_client(
+  config::mqtt::BROKER,
+  config::mqtt::PORT,
+  config::mqtt::CLIENT_ID,
+  config::mqtt::PUBLISH_INTERVAL_MS,
+  config::mqtt::USERNAME,
+  config::mqtt::PASSWORD
+);
 
-// ── BLE ───────────────────────────────────────────────────────────────────────
-static NimBLECharacteristic* txChar    = nullptr;
-static volatile bool         connected = false;
-
-// -1 = no ACK pending, 0x00 = NACK, 0x01 = ACK
-static volatile int pendingAck = -1;
-
-class RxCB : public NimBLECharacteristicCallbacks
-{
-  void onWrite(NimBLECharacteristic* c) override
-  {
-    std::string val = c->getValue();
-    if (!val.empty()) pendingAck = (uint8_t)val[0];
-  }
-};
-
-class ServerCB : public NimBLEServerCallbacks
-{
-  void onConnect(NimBLEServer* s, ble_gap_conn_desc* d) override
-  {
-    connected = true;
-    DEBUG_PRINTLN("[BLE] connected");
-    s->updateConnParams(d->conn_handle,
-      config::ble::CONN_MIN_INTERVAL, config::ble::CONN_MAX_INTERVAL,
-      config::ble::CONN_LATENCY,      config::ble::CONN_TIMEOUT);
-  }
-  void onDisconnect(NimBLEServer*) override
-  {
-    connected = false;
-    DEBUG_PRINTLN("[BLE] disconnected");
-    NimBLEDevice::startAdvertising();
-  }
-};
+HallLED hall_led;
+MicLED  mic_led;
 
 // ── State machine ─────────────────────────────────────────────────────────────
-enum class State { IDLE, RECORDING, DRAINING, WAITING_ACK, ACK_FLASH, NACK_FLASH };
+enum class State { IDLE, RECORDING, DRAINING, WAITING_ACK, FLASH };
 static volatile State state = State::IDLE;
 
-// Transmission states
-static uint16_t      msgId    = 0;
-static unsigned long recStart = 0;
-static unsigned long lastTxMs = 0;
+static unsigned long recStart     = 0;
+static unsigned long waitAckStart = 0;
 
-// LED feedback timing
-static unsigned long ledToggleMs  = 0;   // last blink toggle timestamp
-static unsigned long flashStart   = 0;   // ACK_FLASH start timestamp
-static unsigned long waitAckStart = 0;   // WAITING_ACK entry timestamp
-static int           nackCount    = 0;   // NACK half-period counter
+// ── Thread-safe shared state ───────────────────────────────────────────────────
+struct AudioChunk {
+  uint8_t data[config::mqtt::AUDIO_CHUNK_SIZE];
+  size_t  len;
+};
 
-// ── Sensors ───────────────────────────────────────────────────────────────────
-static MicSensor    mic;  
-static ButtonSensor button;
-static HallSensor   hall;
-static int          activeLedIndex = -1;
+static AudioChunk    audioPool[config::mqtt::AUDIO_POOL_SIZE];
+static QueueHandle_t audioFreeQ;
+static QueueHandle_t audioReadyQ;
+static QueueHandle_t hallQ;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-static void writeHeader(uint8_t* dst, uint16_t msg, uint16_t frag)
+static std::atomic<int>  pendingAck   { -1 };
+static volatile bool     captureIdle  = true;
+
+// ── MQTT ACK callback (called from mqttTask / Core 0) ─────────────────────────
+void onMqttMessage(const char* /*topic*/, const uint8_t* payload, unsigned int len)
 {
-  dst[0] = msg  & 0xFF;  dst[1] = msg  >> 8;
-  dst[2] = frag & 0xFF;  dst[3] = frag >> 8;
+  if (len > 0) pendingAck.store(payload[0], std::memory_order_relaxed);
 }
 
-static void sendRaw(const uint8_t* buf, size_t len)
-{
-  if (connected) { txChar->setValue(buf, len); txChar->notify(); }
-}
-
-static void allLedsOff()
-{
-  digitalWrite(config::button::GREEN_LED_PIN, LOW);
-  digitalWrite(config::button::RED_LED_PIN,   LOW);
-}
-
-static void enterAckFlash(unsigned long now)
-{
-  allLedsOff();
-  flashStart  = now;
-  ledToggleMs = now;
-  state = State::ACK_FLASH;
-}
-
-static void enterNackFlash(unsigned long now)
-{
-  allLedsOff();
-  nackCount   = 0;
-  ledToggleMs = now;
-  state = State::NACK_FLASH;
-}
-
-// ── Capture task (Core 0) ─────────────────────────────────────────────────────
+// ── Capture task (Core 0) ──────────────────────────────────────────────────────
+//
+// Continuously reads the I2S microphone and packs samples into AudioChunk pool
+// slots while state == RECORDING.  When recording stops, any partial chunk is
+// flushed to audioReadyQ before captureIdle is set true.
+//
+// Producer of audioReadyQ / consumer of audioFreeQ.
 static void captureTask(void*)
 {
-  static int32_t raw32[config::mic::SAMPLE_BATCH_SIZE];
+  uint8_t chunkIdx = 0xFF;   // 0xFF = no slot currently held
+  size_t  fillPos  = 0;
 
   for (;;)
   {
-    while (state != State::RECORDING) vTaskDelay(pdMS_TO_TICKS(1));
-
-    // Flush stale DMA samples accumulated while idle
+    if (state == State::RECORDING)
     {
-      size_t dummy;
-      while (i2s_read(I2S_NUM_0, raw32, sizeof(raw32), &dummy, 0) == ESP_OK && dummy > 0);
-    }
+      captureIdle = false;
 
-    while (state == State::RECORDING)
-    {
-      if (head >= config::audio::MAX_FRAGS)
+      // Claim a free slot if we don't have one
+      if (chunkIdx == 0xFF)
       {
-        DEBUG_PRINTLN("[CAP] Buffer full — stopping early");
-        state = State::DRAINING;
-        break;
+        if (xQueueReceive(audioFreeQ, &chunkIdx, pdMS_TO_TICKS(10)) != pdTRUE)
+        {
+          mic.flush();   // pool exhausted — discard this read
+          continue;
+        }
+        fillPos = 0;
       }
 
-      size_t bytesRead;
-      if (i2s_read(I2S_NUM_0, raw32, sizeof(raw32), &bytesRead, 1000) != ESP_OK || bytesRead == 0)
-        continue;
+      mic.read();
+      const size_t bytes = mic.getSampleSize() * sizeof(int16_t);
+      if (bytes == 0) continue;
 
-      uint8_t* dst = ringBuf[head];
-      writeHeader(dst, msgId, (uint16_t)head);
+      const size_t space = config::mqtt::AUDIO_CHUNK_SIZE - fillPos;
+      const size_t copy  = (bytes < space) ? bytes : space;
+      memcpy(audioPool[chunkIdx].data + fillPos, mic.getSamples(), copy);
+      fillPos += copy;
 
-      size_t n = bytesRead / sizeof(int32_t);
-      int16_t* out = reinterpret_cast<int16_t*>(dst + 4);
-      for (size_t i = 0; i < n; i++) out[i] = (int16_t)(raw32[i] >> 16);
+      if (fillPos >= config::mqtt::AUDIO_CHUNK_SIZE)
+      {
+        // Chunk is full — push it and carry any overflow into the next slot
+        audioPool[chunkIdx].len = fillPos;
+        xQueueSend(audioReadyQ, &chunkIdx, portMAX_DELAY);
 
-      ringBytes[head] = 4 + n * sizeof(int16_t);
-      __sync_synchronize();
-      head++;
+        const size_t remainder = bytes - copy;
+        if (remainder > 0 && xQueueReceive(audioFreeQ, &chunkIdx, pdMS_TO_TICKS(10)) == pdTRUE)
+        {
+          memcpy(audioPool[chunkIdx].data, mic.getSamples() + copy, remainder);
+          fillPos = remainder;
+        }
+        else
+        {
+          chunkIdx = 0xFF;
+          fillPos  = 0;
+        }
+      }
+    }
+    else
+    {
+      // Not recording — push any partial chunk then go idle
+      if (chunkIdx != 0xFF && fillPos > 0)
+      {
+        audioPool[chunkIdx].len = fillPos;
+        xQueueSend(audioReadyQ, &chunkIdx, portMAX_DELAY);
+        chunkIdx = 0xFF;
+        fillPos  = 0;
+      }
+      captureIdle = true;
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+  }
+}
+
+// ── MQTT task (Core 0) ─────────────────────────────────────────────────────────
+//
+// Pumps MQTT (receives ACKs, keeps WiFi alive), drains the audio ready queue,
+// and publishes any pending hall sensor changes.
+//
+// Consumer of audioReadyQ / producer of audioFreeQ.
+static void mqttTask(void*)
+{
+  for (;;)
+  {
+    mqtt_client.loop();   // pump MQTT — delivers ACKs via onMqttMessage
+
+    // Drain audio queue
+    uint8_t chunkIdx;
+    if (xQueueReceive(audioReadyQ, &chunkIdx, 0) == pdTRUE)
+    {
+      mqtt_client.publish(config::mqtt::TOPIC_AUDIO,
+                          audioPool[chunkIdx].data,
+                          audioPool[chunkIdx].len);
+      xQueueSend(audioFreeQ, &chunkIdx, portMAX_DELAY);   // return slot to pool
     }
 
-    // Wait for full cycle to complete before next recording
-    while (state != State::IDLE) vTaskDelay(pdMS_TO_TICKS(1));
+    // Drain hall queue
+    int8_t hallVal;
+    if (xQueueReceive(hallQ, &hallVal, 0) == pdTRUE)
+    {
+      mqtt_client.publish(config::mqtt::TOPIC_HALL, (const uint8_t*)&hallVal, 1);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
-// ── BLE setup ─────────────────────────────────────────────────────────────────
-static void setupBLE()
-{
-  NimBLEDevice::init(config::ble::DEVICE_NAME);
-  NimBLEDevice::setMTU(517);
-  NimBLEServer* srv = NimBLEDevice::createServer();
-  srv->setCallbacks(new ServerCB());
-  NimBLEService* svc = srv->createService(config::ble::SERVICE_UUID);
-  txChar = svc->createCharacteristic(config::ble::CHAR_UUID_TX, NIMBLE_PROPERTY::NOTIFY);
-  NimBLECharacteristic* rxChar = svc->createCharacteristic(
-    config::ble::CHAR_UUID_RX, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-  rxChar->setCallbacks(new RxCB());
-  svc->start();
-  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  adv->addServiceUUID(config::ble::SERVICE_UUID);
-  adv->start();
-}
+// ── Helper forward declaration ─────────────────────────────────────────────────
+void pollHall();
 
-// ── Hall sensor poll + publish ────────────────────────────────────────────────
-static void pollHall(unsigned long now)
-{
-  if (state != State::IDLE || !hall.shouldRead(now)) return;
-
-  hall.read();
-  hall.print();
-  int closest = hall.getClosestHall();
-
-  if (closest != activeLedIndex)
-  {
-    if (activeLedIndex >= 0) digitalWrite(config::hall::LED_PINS[activeLedIndex], LOW);
-    if (closest      >= 0) digitalWrite(config::hall::LED_PINS[closest],          HIGH);
-    activeLedIndex = closest;
-  }
-
-  uint8_t hallByte = (closest >= 0) ? (uint8_t)closest : 0xFF;
-  sendRaw(&hallByte, 1);
-}
-
-// ── Audio TX (RECORDING and DRAINING states) ──────────────────────────────────
-static void txAudio(unsigned long now)
-{
-  if (state != State::RECORDING && state != State::DRAINING) return;
-
-  if (now - lastTxMs >= config::audio::TX_INTERVAL_MS && tail < head)
-  {
-    sendRaw(ringBuf[tail], ringBytes[tail]);
-    DEBUG_PRINTF("[TX] frag=%u len=%u queued=%u\n",
-                 (unsigned)tail,
-                 (unsigned)(ringBytes[tail] - 4),
-                 (unsigned)(head - tail));
-    tail++;
-    lastTxMs = now;
-  }
-
-  if (state == State::DRAINING && tail >= head)
-  {
-    static uint8_t sentinelBuf[4];
-    writeHeader(sentinelBuf, msgId, config::audio::FRAGMENT_SENTINEL);
-    sendRaw(sentinelBuf, 4);
-    DEBUG_PRINTF("[TX] Sentinel sent. %u total fragments.\n", (unsigned)tail);
-    ledToggleMs  = now;
-    waitAckStart = now;
-    state = State::WAITING_ACK;
-  }
-}
-
-// ── Arduino entry points ──────────────────────────────────────────────────────
+// ── Setup ──────────────────────────────────────────────────────────────────────
 void setup()
 {
   DEBUG_INIT();
-  DEBUG_PRINTLN("\n=== Bar Firmware ===");
+  DEBUG_PRINTLN("==== BAR::MAIN ====");
 
-  mic.setup();
   button.setup();
   hall.setup();
+  mic.setup();
 
-  // Status LEDs
-  pinMode(config::button::GREEN_LED_PIN, OUTPUT);
-  pinMode(config::button::RED_LED_PIN,   OUTPUT);
-  allLedsOff();
+  hall_led.setup();
+  mic_led.setup();
 
-  // Hall indicator LEDs
-  for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; i++)
-  {
-    pinMode(config::hall::LED_PINS[i], OUTPUT);
-    digitalWrite(config::hall::LED_PINS[i], LOW);
-  }
+  // Initialise queues
+  audioFreeQ  = xQueueCreate(config::mqtt::AUDIO_POOL_SIZE, sizeof(uint8_t));
+  audioReadyQ = xQueueCreate(config::mqtt::AUDIO_POOL_SIZE, sizeof(uint8_t));
+  hallQ       = xQueueCreate(8, sizeof(int8_t));
 
-  setupBLE();
-  xTaskCreatePinnedToCore(captureTask, "capture", 8192, nullptr, 1, nullptr, 0);
+  // Populate the free queue with every pool index
+  for (uint8_t i = 0; i < (uint8_t)config::mqtt::AUDIO_POOL_SIZE; i++)
+    xQueueSend(audioFreeQ, &i, 0);
+
+  mqtt_client.connect(config::wifi::SSID, config::wifi::PASSWORD);
+  mqtt_client.subscribe(config::mqtt::TOPIC_ACK, onMqttMessage);
+
+  // Core 0: capture (priority 2 — preempts MQTT so I2S DMA is never starved)
+  //         mqtt    (priority 1)
+  xTaskCreatePinnedToCore(captureTask, "capture", 4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(mqttTask,    "mqtt",    8192, nullptr, 1, nullptr, 0);
 
   DEBUG_PRINTLN("Ready. Press button to record.");
 }
 
+// ── Main loop (Core 1) ─────────────────────────────────────────────────────────
 void loop()
 {
   unsigned long now = millis();
 
   if (button.shouldRead(now)) button.read();
-  pollHall(now);
+  if (hall.shouldRead(now))   pollHall();
 
-  // ── State machine ─────────────────────────────────────────────────────────
   switch (state)
   {
   case State::IDLE:
     if (button.wasPressed())
     {
-      if (activeLedIndex >= 0) digitalWrite(config::hall::LED_PINS[activeLedIndex], LOW);
-      activeLedIndex = -1;
-
-      head = 0; tail = 0;
-      pendingAck = -1;
-      msgId++;
       recStart = now;
-      lastTxMs = now;
-      digitalWrite(config::button::GREEN_LED_PIN, HIGH);
-      DEBUG_PRINTF("Recording started (msg=%u)\n", msgId);
+      mic_led.setRecording();
+      DEBUG_PRINTLN("Recording started.");
       state = State::RECORDING;
     }
     break;
@@ -271,68 +221,64 @@ void loop()
   case State::RECORDING:
     if (button.wasPressed() || (now - recStart >= (unsigned long)config::button::DURATION_MS))
     {
-      DEBUG_PRINTF("Recording stopped. %u frags captured so far.\n", (unsigned)head);
+      mic_led.setIdle();
       state = State::DRAINING;
-      digitalWrite(config::button::GREEN_LED_PIN, LOW);
     }
     break;
 
   case State::DRAINING:
-    break;  // handled in txAudio()
-
-  case State::WAITING_ACK:
-    if (pendingAck == 0x01)
+  {
+    const bool queueEmpty    = (uxQueueMessagesWaiting(audioReadyQ) == 0);
+    const bool captureIsDone = captureIdle;
+    if (queueEmpty && captureIsDone)
     {
-      DEBUG_PRINTLN("[ACK] received");
-      enterAckFlash(now);
-    }
-    else if (pendingAck == 0x00)
-    {
-      DEBUG_PRINTLN("[NACK] received");
-      enterNackFlash(now);
-    }
-    else if (now - waitAckStart >= config::feedback::ACK_TIMEOUT_MS)
-    {
-      DEBUG_PRINTLN("[ACK] timeout — treating as NACK");
-      enterNackFlash(now);
-    }
-    else if (now - ledToggleMs >= config::feedback::WAIT_BLINK_MS)
-    {
-      // Slow green blink while waiting
-      digitalWrite(config::button::GREEN_LED_PIN,
-                   !digitalRead(config::button::GREEN_LED_PIN));
-      ledToggleMs = now;
-    }
-    break;
-
-  case State::ACK_FLASH:
-    if (now - flashStart >= config::feedback::ACK_DURATION_MS)
-    {
-      allLedsOff();
-      state = State::IDLE;
-    }
-    else if (now - ledToggleMs >= config::feedback::ACK_BLINK_MS)
-    {
-      digitalWrite(config::button::GREEN_LED_PIN,
-                   !digitalRead(config::button::GREEN_LED_PIN));
-      ledToggleMs = now;
-    }
-    break;
-
-  case State::NACK_FLASH:
-    if (now - ledToggleMs >= config::feedback::NACK_BLINK_MS)
-    {
-      nackCount++;
-      digitalWrite(config::button::RED_LED_PIN, (nackCount % 2 == 1) ? HIGH : LOW);
-      ledToggleMs = now;
-      if (nackCount >= config::feedback::NACK_BLINK_COUNT * 2)
-      {
-        allLedsOff();
-        state = State::IDLE;
-      }
+      pendingAck.store(-1, std::memory_order_relaxed);
+      waitAckStart = now;
+      mic_led.setWaitingAck(now);
+      state = State::WAITING_ACK;
     }
     break;
   }
 
-  txAudio(now);
+  case State::WAITING_ACK:
+  {
+    const int ack = pendingAck.load(std::memory_order_relaxed);
+    if (ack == 0x01)
+    {
+      DEBUG_PRINTLN("[ACK] received");
+      mic_led.setAckFlash(now);
+      state = State::FLASH;
+    }
+    else if (ack == 0x00 || now - waitAckStart >= config::feedback::ACK_TIMEOUT_MS)
+    {
+      DEBUG_PRINTLN(ack == 0x00 ? "[NACK] received" : "[ACK] timeout — treating as NACK");
+      mic_led.setNackFlash(now);
+      state = State::FLASH;
+    }
+    else
+    {
+      mic_led.update(now);
+    }
+    break;
+  }
+
+  case State::FLASH:
+    if (mic_led.update(now)) state = State::IDLE;
+    break;
+  }
+}
+
+void pollHall()
+{
+  hall.read();
+  hall.print();
+
+  if (hall.prevClosestHall != hall.closestHall)
+  {
+    hall_led.offLED(hall.prevClosestHall);
+    hall_led.onLED(hall.closestHall);
+
+    int8_t hallVal = (int8_t)hall.closestHall;
+    xQueueSend(hallQ, &hallVal, 0);
+  }
 }

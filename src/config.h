@@ -75,6 +75,31 @@ namespace config
     constexpr uint16_t    CONN_TIMEOUT      = 600;
   }
 
+  namespace wifi {
+    constexpr const char* SSID     = "MEDEA";
+    constexpr const char* PASSWORD = "12345678";
+  }
+
+  namespace mqtt {
+    constexpr const char* BROKER              = "192.168.1.4";
+    constexpr int         PORT                = 1883;
+    constexpr const char* USERNAME            = "test";
+    constexpr const char* PASSWORD            = "test";
+    constexpr const char* CLIENT_ID           = "bar";
+    constexpr int         PUBLISH_INTERVAL_MS = 2000;
+
+    constexpr const char* TOPIC_TEST          = "test";
+    constexpr const char* TOPIC_AUDIO         = "audio";
+    constexpr const char* TOPIC_HALL          = "hall";
+    constexpr const char* TOPIC_ACK           = "ack";
+
+    constexpr size_t      AUDIO_CHUNK_SIZE    = 1024 * 8;
+    constexpr size_t      CHUNK_SIZE          = AUDIO_CHUNK_SIZE + 32;
+    constexpr size_t      JSON_BUFFER_SIZE    = 512;
+    constexpr size_t      MAX_AUDIO_POOL_BYTES= 100 * 1024;
+    constexpr size_t      AUDIO_POOL_SIZE     = MAX_AUDIO_POOL_BYTES / (AUDIO_CHUNK_SIZE + 6);
+  }
+
   namespace feedback {
     constexpr unsigned long WAIT_BLINK_MS   = 300;   // green slow blink while awaiting ACK
     constexpr unsigned long ACK_BLINK_MS    = 100;   // green fast blink on ACK
