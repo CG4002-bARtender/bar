@@ -23,8 +23,8 @@ void loop()
 {
   micSensor.read();
 
-  const int16_t* samples = reinterpret_cast<const int16_t*>(micSensor.getSamplesBuffer());
-  size_t n = micSensor.getNumSamples();
+  const int16_t* samples = reinterpret_cast<const int16_t*>(micSensor.getSamples());
+  size_t n = micSensor.getSampleSize();
 
   if (n == 0) {
     DEBUG_PRINTLN("[ERROR] i2s_read failed or returned 0 bytes — check VDD/GND");

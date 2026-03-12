@@ -28,7 +28,7 @@ void loop()
     hallSensor.read();
     hallSensor.print();
 
-    int closest = hallSensor.getClosestHall();
+    int closest = hallSensor.closestHall;
 
     if (closest != activeLedIndex)
     {
