@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -31,7 +31,7 @@ private:
   void connectWifi(const char* ssid, const char* password);
   bool connectMqtt();
 
-  WiFiClientSecure wifiClient;
+  WiFiClient wifiClient;
   PubSubClient mqttClient;
 
   const char* broker;

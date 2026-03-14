@@ -1,116 +1,139 @@
 """
-BLE Audio Receiver - Debug tool for firmware record & publish testing.
+MQTT Audio Receiver - Debug tool for firmware record & publish testing.
 
-Connects to the ESP32 "bar" device over BLE, subscribes to audio notifications
-on the NUS TX characteristic, collects audio fragments by messageId, and saves
-completed recordings as .wav files.
+Connects to the MQTT broker, subscribes to the audio topic, accumulates raw
+PCM chunks, and saves completed recordings as .wav files.
 
 Protocol:
-    Bytes 0-1: messageId (uint16 LE)
-    Bytes 2-3: fragmentId (uint16 LE) - 0xFFFF = end sentinel
-    Bytes 4+:  Audio data (16-bit PCM, 8kHz mono)
+    Topic "audio": raw 16-bit PCM audio chunks (no header)
+    Topic "ack":   ACK (0x01) or NACK (0x00) published back to firmware
 
-After saving, sends ACK (0x01) or NACK (0x00) to the RX characteristic:
-    ACK  if audio data is >= EXPECTED_MIN_BYTES (i.e. recording was long enough)
-    NACK otherwise
+ACK is sent immediately once EXPECTED_BYTES (2s of audio) are received.
+NACK + save triggered by TIMEOUT_S fallback for short/interrupted recordings.
 """
 
-import asyncio
-import struct
 import time
+import threading
 import wave
 from datetime import datetime
 from pathlib import Path
 
-from bleak import BleakClient, BleakScanner
+import paho.mqtt.client as mqtt
 
-# BLE Configuration (matches firmware config.h)
-DEVICE_NAME     = "bar"
-SERVICE_UUID    = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-CHAR_UUID_TX    = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-CHAR_UUID_RX    = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+# MQTT Configuration (matches firmware config.h)
+BROKER   = "10.187.150.191"
+PORT     = 1883
+USERNAME = "test"
+PASSWORD = "test"
+
+TOPIC_AUDIO = "audio"
+TOPIC_ACK   = "ack"
 
 # Audio Configuration (matches firmware config.h)
-SAMPLE_RATE     = 8000
-SAMPLE_WIDTH    = 2       # 16-bit = 2 bytes
-CHANNELS        = 1
-FRAGMENT_SENTINEL = 0xFFFF
+SAMPLE_RATE  = 8000
+SAMPLE_WIDTH = 2    # 16-bit = 2 bytes
+CHANNELS     = 1
 
-# ACK if audio covers at least this many bytes (2 seconds of audio as floor)
-EXPECTED_MIN_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * 2   # 32000 bytes
+# Exact expected byte count: 8000 samples/s × 2 bytes × 2 seconds
+EXPECTED_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * 2   # 32 000 bytes
 
 ACK  = bytes([0x01])
 NACK = bytes([0x00])
 
-# Output directory for recordings
-OUTPUT_DIR = Path(__file__).parent / "recordings"
+# Fallback: save + NACK if no new chunk arrives within this many seconds
+TIMEOUT_S = 1.0
 
-TIMEOUT_S = 2.0  # save recording if no new fragments arrive within this many seconds
+OUTPUT_DIR = Path(__file__).parent / "recordings"
 
 
 class AudioReceiver:
     def __init__(self):
-        # {messageId: {fragmentId: audio_data}}
-        self.recordings: dict[int, dict[int, bytes]] = {}
-        # {messageId: timestamp of last received fragment}
-        self.last_rx: dict[int, float] = {}
-        self._client: BleakClient | None = None
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    def _on_notification(self, _handle: int, payload: bytearray):
-        if len(payload) == 1:
-            slot = payload[0]
-            label = f"A{slot}" if slot != 0xFF else "none"
-            print(f"[HALL] closest={label}")
+        self._audio_buf: list[bytes] = []
+        self._total_bytes            = 0
+        self._last_rx: float | None  = None
+        self._recording              = False
+        self._cooldown_until         = 0.0   # ignore chunks until this monotonic time
+        self._lock                   = threading.Lock()
+
+        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self._client.username_pw_set(USERNAME, PASSWORD)
+        self._client.on_connect    = self._on_connect
+        self._client.on_message    = self._on_message
+        self._client.on_disconnect = self._on_disconnect
+
+    # ── MQTT callbacks ─────────────────────────────────────────────────────────
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code == 0:
+            print(f"Connected to broker {BROKER}:{PORT}")
+            client.subscribe(TOPIC_AUDIO)
+            print(f"Subscribed to '{TOPIC_AUDIO}'. Waiting for audio... (Ctrl+C to stop)")
+        else:
+            print(f"Connection failed: {reason_code}")
+
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties):
+        print(f"Disconnected ({reason_code})")
+
+    def _on_message(self, client, userdata, msg):
+        if msg.topic != TOPIC_AUDIO:
             return
 
-        if len(payload) < 4:
-            print(f"Invalid fragment: payload too short ({len(payload)} bytes)")
+        chunk = bytes(msg.payload)
+        if not chunk:
             return
 
-        message_id, fragment_id = struct.unpack("<HH", payload[:4])
-        audio_data = bytes(payload[4:])
+        flush_data = None
+        with self._lock:
+            if time.monotonic() < self._cooldown_until:
+                return
 
-        if fragment_id == FRAGMENT_SENTINEL:
-            print(f"[MSG {message_id}] Received end sentinel")
-            asyncio.create_task(self._handle_sentinel(message_id))
+            if not self._recording:
+                self._audio_buf.clear()
+                self._total_bytes = 0
+                self._recording   = True
+                print("Recording started.")
+
+            self._audio_buf.append(chunk)
+            self._total_bytes += len(chunk)
+            self._last_rx = time.monotonic()
+            print(f"  chunk {len(self._audio_buf):>3}  +{len(chunk)} bytes  total={self._total_bytes}")
+
+            if self._total_bytes >= EXPECTED_BYTES:
+                flush_data        = b"".join(self._audio_buf)
+                self._audio_buf.clear()
+                self._total_bytes = 0
+                self._last_rx     = None
+                self._recording   = False
+
+        if flush_data is not None:
+            self._save_and_ack(flush_data, ack=True)
+
+    # ── Timeout fallback (runs in background thread) ───────────────────────────
+
+    def _timeout_watcher(self):
+        while True:
+            time.sleep(0.25)
+            flush_data = None
+            with self._lock:
+                if self._recording and self._last_rx is not None:
+                    if time.monotonic() - self._last_rx >= TIMEOUT_S:
+                        flush_data        = b"".join(self._audio_buf)
+                        self._audio_buf.clear()
+                        self._total_bytes = 0
+                        self._last_rx     = None
+                        self._recording   = False
+
+            if flush_data is not None:
+                self._save_and_ack(flush_data, ack=False)
+
+    def _save_and_ack(self, audio_data: bytes, ack: bool, cooldown_s: float = 1.0):
+        if not audio_data:
             return
-
-        if message_id not in self.recordings:
-            self.recordings[message_id] = {}
-            print(f"[MSG {message_id}] New recording started")
-
-        self.recordings[message_id][fragment_id] = audio_data
-        self.last_rx[message_id] = time.monotonic()
-
-        checksum = sum(audio_data)
-        first8 = [int.from_bytes(bytes([b]), "little", signed=True) for b in audio_data[:8]]
-        print(f"RX frag={fragment_id} len={len(audio_data)} sum={checksum} first8={first8}")
-
-    async def _handle_sentinel(self, message_id: int):
-        ok = self._save_recording(message_id)
-        if self._client and self._client.is_connected:
-            payload = ACK if ok else NACK
-            await self._client.write_gatt_char(CHAR_UUID_RX, payload)
-            print(f"[MSG {message_id}] Sent {'ACK' if ok else 'NACK'}")
-
-    def _save_recording(self, message_id: int) -> bool:
-        """Save recording to .wav. Returns True (ACK) if byte count meets minimum."""
-        if message_id not in self.recordings:
-            print(f"[MSG {message_id}] No fragments to save")
-            return False
-
-        self.last_rx.pop(message_id, None)
-        fragments = self.recordings.pop(message_id)
-        if not fragments:
-            print(f"[MSG {message_id}] Empty recording, skipping")
-            return False
-
-        sorted_ids = sorted(fragments.keys())
-        audio_data = b"".join(fragments[fid] for fid in sorted_ids)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = OUTPUT_DIR / f"recording_{message_id}_{timestamp}.wav"
+        filename  = OUTPUT_DIR / f"recording_{timestamp}.wav"
 
         with wave.open(str(filename), "wb") as wav_file:
             wav_file.setnchannels(CHANNELS)
@@ -119,54 +142,30 @@ class AudioReceiver:
             wav_file.writeframes(audio_data)
 
         duration_ms = (len(audio_data) / SAMPLE_WIDTH) / SAMPLE_RATE * 1000
-        ok = len(audio_data) >= EXPECTED_MIN_BYTES
-        print(
-            f"[MSG {message_id}] Saved: {filename.name} "
-            f"({len(sorted_ids)} fragments, {len(audio_data)} bytes, {duration_ms:.0f}ms) "
-            f"→ {'ACK' if ok else 'NACK'}"
-        )
-        return ok
+        label = "ACK" if ack else "NACK"
+        print(f"Saved: {filename.name} ({len(audio_data)} bytes, {duration_ms:.0f}ms) → {label}")
 
-    async def _timeout_watcher(self):
-        while True:
-            await asyncio.sleep(0.5)
-            now = time.monotonic()
-            timed_out = [mid for mid, ts in self.last_rx.items() if now - ts >= TIMEOUT_S]
-            for mid in timed_out:
-                print(f"[MSG {mid}] Timeout — saving without sentinel")
-                self._save_recording(mid)
+        self._client.publish(TOPIC_ACK, ACK if ack else NACK)
+        print(f"Published {label} to '{TOPIC_ACK}'")
+        with self._lock:
+            self._cooldown_until = time.monotonic() + cooldown_s
 
-    async def run(self):
-        print(f"Scanning for '{DEVICE_NAME}'...")
-        device = await BleakScanner.find_device_by_name(DEVICE_NAME)
-        if device is None:
-            print(f"Device '{DEVICE_NAME}' not found. Is it advertising?")
-            return
+    # ── Entry point ────────────────────────────────────────────────────────────
 
-        print(f"Found {device.name} [{device.address}]. Connecting...")
-        async with BleakClient(device) as client:
-            self._client = client
-            print("Connected. Subscribing to audio notifications...")
-            await client.start_notify(CHAR_UUID_TX, self._on_notification)
-            print("Waiting for audio fragments... (Ctrl+C to stop)")
-            watcher = asyncio.create_task(self._timeout_watcher())
-            try:
-                await asyncio.get_event_loop().create_future()  # run until cancelled
-            except asyncio.CancelledError:
-                pass
-            finally:
-                watcher.cancel()
-                await client.stop_notify(CHAR_UUID_TX)
-                self._client = None
-                print("Disconnected.")
+    def run(self):
+        threading.Thread(target=self._timeout_watcher, daemon=True).start()
+
+        self._client.connect(BROKER, PORT, keepalive=60)
+        try:
+            self._client.loop_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+        finally:
+            self._client.disconnect()
 
 
 def main():
-    receiver = AudioReceiver()
-    try:
-        asyncio.run(receiver.run())
-    except KeyboardInterrupt:
-        print("\nShutting down...")
+    AudioReceiver().run()
 
 
 if __name__ == "__main__":

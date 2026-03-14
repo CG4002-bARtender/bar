@@ -23,7 +23,6 @@ MqttClient::MqttClient(const char* broker, int port, const char* clientId, unsig
       userCallback(nullptr),
       subscribedTopic(nullptr)
 {
-  wifiClient.setInsecure(); // TODO: load CA cert via setCACert() for production
   mqttClient.setBufferSize(config::mqtt::CHUNK_SIZE);
   mqttClient.setServer(broker, port);
   mqttClient.setCallback(pubsubCallback);
@@ -122,20 +121,16 @@ bool MqttClient::connectMqtt()
 {
   DEBUG_PRINTF("Connecting to MQTT: %s:%d\n", broker, port);
 
-  bool success;
-  if (username != nullptr && password != nullptr)
+  while (true)
   {
-    success = mqttClient.connect(clientId, username, password);
-  }
-  else
-  {
-    success = mqttClient.connect(clientId);
-  }
+    bool success = (username != nullptr && password != nullptr)
+      ? mqttClient.connect(clientId, username, password)
+      : mqttClient.connect(clientId);
 
-  if (!success)
-  {
-    DEBUG_PRINTF("MQTT connect failed, state=%d\n", mqttClient.state());
-    return false;
+    if (success) break;
+
+    DEBUG_PRINTF("MQTT connect failed, state=%d. Retrying in 2s...\n", mqttClient.state());
+    delay(2000);
   }
 
   DEBUG_PRINTLN("MQTT connected!");
