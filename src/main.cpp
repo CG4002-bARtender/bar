@@ -11,7 +11,6 @@
 #include "sensors/hall_sensor.h"
 #include "comms/mqtt_client.h"
 #include "comms/ble_client.h"
-#include "actuators/hall_led.h"
 #include "actuators/mic_led.h"
 
 ButtonSensor button;

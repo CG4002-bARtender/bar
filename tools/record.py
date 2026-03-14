@@ -12,6 +12,8 @@ ACK is sent immediately once EXPECTED_BYTES (2s of audio) are received.
 NACK + save triggered by TIMEOUT_S fallback for short/interrupted recordings.
 """
 
+import math
+import struct
 import time
 import threading
 import wave
@@ -21,7 +23,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 # MQTT Configuration (matches firmware config.h)
-BROKER   = "10.187.150.191"
+BROKER   = "10.77.105.191"
 PORT     = 1883
 USERNAME = "test"
 PASSWORD = "test"
@@ -98,7 +100,14 @@ class AudioReceiver:
             self._audio_buf.append(chunk)
             self._total_bytes += len(chunk)
             self._last_rx = time.monotonic()
-            print(f"  chunk {len(self._audio_buf):>3}  +{len(chunk)} bytes  total={self._total_bytes}")
+
+            n = len(chunk) // 2
+            samples = struct.unpack_from(f"{n}h", chunk)
+            s_min, s_max = min(samples), max(samples)
+            rms = math.sqrt(sum(s * s for s in samples) / n) if n else 0
+            zeros = sum(1 for s in samples if s == 0)
+            print(f"  chunk {len(self._audio_buf):>3}  +{len(chunk)}B  total={self._total_bytes}  "
+                  f"min={s_min:>7}  max={s_max:>6}  rms={rms:>7.1f}  zeros={zeros}/{n}")
 
             if self._total_bytes >= EXPECTED_BYTES:
                 flush_data        = b"".join(self._audio_buf)
@@ -135,11 +144,18 @@ class AudioReceiver:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename  = OUTPUT_DIR / f"recording_{timestamp}.wav"
 
+        GAIN = 8
+        n_samples = len(audio_data) // SAMPLE_WIDTH
+        samples = struct.unpack_from(f"{n_samples}h", audio_data)
+        amplified = bytes(struct.pack(f"{n_samples}h", *(
+            max(-32768, min(32767, s * GAIN)) for s in samples
+        )))
+
         with wave.open(str(filename), "wb") as wav_file:
             wav_file.setnchannels(CHANNELS)
             wav_file.setsampwidth(SAMPLE_WIDTH)
             wav_file.setframerate(SAMPLE_RATE)
-            wav_file.writeframes(audio_data)
+            wav_file.writeframes(amplified)
 
         duration_ms = (len(audio_data) / SAMPLE_WIDTH) / SAMPLE_RATE * 1000
         label = "ACK" if ack else "NACK"
