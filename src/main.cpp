@@ -21,7 +21,7 @@ MicLED  mic_led;
 
 // ── State machine ─────────────────────────────────────────────────────────────
 enum class State { IDLE, RECORDING, DRAINING, WAITING_ACK, FLASH };
-static volatile State state = State::IDLE;
+static std::atomic<State> state { State::IDLE };
 
 static unsigned long recStart     = 0;
 static unsigned long waitAckStart = 0;
@@ -39,7 +39,9 @@ static QueueHandle_t gloveQ;
 
 static std::atomic<int>  pendingAck   { -1 };
 static std::atomic<int>  pendingHall  { -1 };  // -1 = no pending update
-static volatile bool     captureIdle  = true;
+static std::atomic<bool> captureIdle  { true };
+
+static_assert(config::mqtt::AUDIO_POOL_SIZE <= 254, "AUDIO_POOL_SIZE exceeds chunkIdx sentinel range (max 254)");
 
 // ── Callbacks ─────────────────────────────────────────────────────────
 static void onGloveNotify(const uint8_t* data, size_t length)
@@ -126,7 +128,7 @@ void setup()
   mqtt_client.connect(config::wifi::SSID, config::wifi::PASSWORD);
   mqtt_client.subscribe(config::mqtt::TOPIC_ACK, onMqttMessage);
 
-  glove_ble.begin();
+  // glove_ble.begin();
 
   // Setup Multithreading
   // Core 0: capture (priority 2 — preempts MQTT so I2S DMA is never starved)
@@ -145,9 +147,9 @@ void loop()
   if (button.shouldRead(now)) button.read();
   if (hall.shouldRead(now))   pollHall();
 
-  glove_ble.loop();
+  // glove_ble.loop();
 
-  switch (state)
+  switch (state.load())
   {
   case State::IDLE:
     if (button.wasPressed())
@@ -155,7 +157,7 @@ void loop()
       recStart = now;
       mic_led.setRecording();
       DEBUG_PRINTLN("Recording started.");
-      state = State::RECORDING;
+      state.store(State::RECORDING);
     }
     break;
 
@@ -163,20 +165,20 @@ void loop()
     if (button.wasPressed() || (now - recStart >= (unsigned long)config::button::DURATION_MS))
     {
       mic_led.setIdle();
-      state = State::DRAINING;
+      state.store(State::DRAINING);
     }
     break;
 
   case State::DRAINING:
   {
     const bool queueEmpty    = (uxQueueMessagesWaiting(audioReadyQ) == 0);
-    const bool captureIsDone = captureIdle;
+    const bool captureIsDone = captureIdle.load();
     if (queueEmpty && captureIsDone)
     {
       pendingAck.store(-1, std::memory_order_relaxed);
       waitAckStart = now;
       mic_led.setWaitingAck(now);
-      state = State::WAITING_ACK;
+      state.store(State::WAITING_ACK);
     }
     break;
   }
@@ -188,13 +190,13 @@ void loop()
     {
       DEBUG_PRINTLN("[ACK] received");
       mic_led.setAckFlash(now);
-      state = State::FLASH;
+      state.store(State::FLASH);
     }
     else if (ack == 0x00 || now - waitAckStart >= config::feedback::ACK_TIMEOUT_MS)
     {
       DEBUG_PRINTLN(ack == 0x00 ? "[NACK] received" : "[ACK] timeout — treating as NACK");
       mic_led.setNackFlash(now);
-      state = State::FLASH;
+      state.store(State::FLASH);
     }
     else
     {
@@ -204,7 +206,7 @@ void loop()
   }
 
   case State::FLASH:
-    if (mic_led.update(now)) state = State::IDLE;
+    if (mic_led.update(now)) state.store(State::IDLE);
     break;
   }
 }
@@ -230,8 +232,8 @@ static void mqttTask(void*)
     const int hallVal = pendingHall.exchange(-1, std::memory_order_relaxed);
     if (hallVal >= 0)
     {
-      const int8_t v = (int8_t)hallVal;
-      mqtt_client.publish(config::mqtt::TOPIC_HALL, (const uint8_t*)&v, 1);
+      const uint8_t v = (uint8_t)hallVal;
+      mqtt_client.publish(config::mqtt::TOPIC_HALL, &v, 1);
     }
 
     // Drain glove gesture queue
@@ -252,15 +254,16 @@ static void captureTask(void*)
 
   for (;;)
   {
-    if (state == State::RECORDING)
+    if (state.load() == State::RECORDING)
     {
-      captureIdle = false;
+      captureIdle.store(false);
 
       // Claim a free slot if we don't have one
       if (chunkIdx == 0xFF)
       {
         if (xQueueReceive(audioFreeQ, &chunkIdx, pdMS_TO_TICKS(10)) != pdTRUE)
         {
+          DEBUG_PRINTLN("[WARN] Audio pool exhausted — dropping mic read");
           mic.flush();   // pool exhausted — discard this read
           continue;
         }
@@ -290,6 +293,7 @@ static void captureTask(void*)
         }
         else
         {
+          DEBUG_PRINTF("[WARN] Audio pool exhausted — dropping %u overflow bytes\n", (unsigned)remainder);
           chunkIdx = 0xFF;
           fillPos  = 0;
         }
@@ -305,7 +309,7 @@ static void captureTask(void*)
         chunkIdx = 0xFF;
         fillPos  = 0;
       }
-      captureIdle = true;
+      captureIdle.store(true);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
   }
@@ -318,8 +322,13 @@ void pollHall()
 
   if (hall.prevClosestHall != hall.closestHall)
   {
-    digitalWrite(config::hall::LED_PINS[hall.prevClosestHall], LOW);
-    digitalWrite(config::hall::LED_PINS[hall.closestHall], HIGH);
+    if (hall.prevClosestHall >= 0) {
+      digitalWrite(config::hall::LED_PINS[hall.prevClosestHall], LOW);
+    }
+
+    if (hall.closestHall >= 0) {
+      digitalWrite(config::hall::LED_PINS[hall.closestHall], HIGH);
+    }
 
     pendingHall.store((int)hall.closestHall, std::memory_order_relaxed);
   }

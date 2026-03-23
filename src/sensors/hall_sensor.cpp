@@ -20,7 +20,7 @@ void HallSensor::read()
   int largestSeen = 0;
   for (size_t i = 0; i < config::hall::SENSOR_PINS_LEN; ++i)
   {
-    offsetValues[i] = analogRead(config::hall::SENSOR_PINS[i]) - baselineValues[i];
+    offsetValues[i] = (analogRead(config::hall::SENSOR_PINS[i]) - baselineValues[i]) * config::hall::SENSOR_MULS[i];
     if (offsetValues[i] > largestSeen && offsetValues[i] > config::hall::NOISE_THRESHOLD) {
       closestHall = i;
       largestSeen = offsetValues[i];

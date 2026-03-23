@@ -23,7 +23,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 # MQTT Configuration (matches firmware config.h)
-BROKER   = "10.77.105.191"
+BROKER   = "192.168.1.22"
 PORT     = 1883
 USERNAME = "test"
 PASSWORD = "test"
@@ -34,7 +34,7 @@ TOPIC_ACK   = "ack"
 # Audio Configuration (matches firmware config.h)
 SAMPLE_RATE  = 8000
 SAMPLE_WIDTH = 2    # 16-bit = 2 bytes
-CHANNELS     = 1
+CHANNELS = 1
 
 # Exact expected byte count: 8000 samples/s × 2 bytes × 2 seconds
 EXPECTED_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * 2   # 32 000 bytes
