@@ -128,7 +128,7 @@ void setup()
   mqtt_client.connect(config::wifi::SSID, config::wifi::PASSWORD);
   mqtt_client.subscribe(config::mqtt::TOPIC_ACK, onMqttMessage);
 
-  // glove_ble.begin();
+  glove_ble.begin();
 
   // Setup Multithreading
   // Core 0: capture (priority 2 — preempts MQTT so I2S DMA is never starved)
@@ -147,7 +147,7 @@ void loop()
   if (button.shouldRead(now)) button.read();
   if (hall.shouldRead(now))   pollHall();
 
-  // glove_ble.loop();
+  glove_ble.loop();
 
   switch (state.load())
   {

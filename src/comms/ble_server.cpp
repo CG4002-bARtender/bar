@@ -18,9 +18,11 @@ public:
   }
 };
 
+BleServer::BleServer(const char* deviceName) : _deviceName(deviceName) {}
+
 void BleServer::begin()
 {
-  NimBLEDevice::init(config::ble::DEVICE_NAME);
+  NimBLEDevice::init(_deviceName);
   NimBLEDevice::setMTU(517);  // request max MTU; central must respond, forcing negotiation above OS default
 
   NimBLEServer *pServer = NimBLEDevice::createServer();
@@ -35,7 +37,7 @@ void BleServer::begin()
   pAdv->setScanResponse(true);
   pAdv->start();
 
-  DEBUG_PRINTF("[BLE] Advertising as '%s'\n", config::ble::DEVICE_NAME);
+  DEBUG_PRINTF("[BLE] Advertising as '%s'\n", _deviceName);
 }
 
 bool BleServer::send(const std::string &msg)

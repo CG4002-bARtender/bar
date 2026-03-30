@@ -7,7 +7,7 @@
 class BleServer
 {
 public:
-  BleServer() = default;
+  explicit BleServer(const char* deviceName);
 
   void begin();
   bool send(const std::string &msg);
@@ -30,6 +30,7 @@ private:
   void _onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc);
   void _onDisconnect();
 
+  const char*            _deviceName;
   NimBLECharacteristic *_txChar    = nullptr;
   bool                   _connected = false;
 

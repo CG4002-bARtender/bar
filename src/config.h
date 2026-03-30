@@ -46,7 +46,7 @@ namespace config
 
   namespace hall {
     constexpr int    SENSOR_PINS[]  = {A0, A1, A2, A3};
-    constexpr int    LED_PINS[]     = {D3, D2, D7, D8};
+    constexpr int    LED_PINS[]     = {D2, D3, D7, D8};
     constexpr int    SENSOR_MULS[]  = {1,  2,  2,  1 };
     constexpr size_t SENSOR_PINS_LEN = sizeof(SENSOR_PINS) / sizeof(SENSOR_PINS[0]);
     constexpr int    INTERVAL_MS        = 400;
@@ -80,12 +80,12 @@ namespace config
   
 
   namespace wifi {
-    constexpr const char* SSID     = "iPhone (3)";
-    constexpr const char* PASSWORD = "avKMT7pyS";
+    constexpr const char* SSID     = "Home-S";
+    constexpr const char* PASSWORD = "selvan555";
   }
 
   namespace mqtt {
-    constexpr const char* BROKER              = "172.20.10.2";
+    constexpr const char* BROKER              = "192.168.1.113";
     constexpr int         PORT                = 1883;
     constexpr const char* USERNAME            = "test";
     constexpr const char* PASSWORD            = "test";
