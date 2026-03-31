@@ -86,11 +86,15 @@ namespace config
 
   namespace mqtt {
     constexpr const char* BROKER              = "172.20.10.2";
-    constexpr int         PORT                = 1883;
+    constexpr int         PORT                = 8883;
     constexpr const char* USERNAME            = "test";
     constexpr const char* PASSWORD            = "test";
     constexpr const char* CLIENT_ID           = "bar";
     constexpr int         PUBLISH_INTERVAL_MS = 2000;
+
+    constexpr const char* CERT_CA             = "/ca.crt";
+    constexpr const char* CERT_CLIENT        = "/bar.crt";
+    constexpr const char* CERT_KEY           = "/bar.key";
 
     constexpr const char* TOPIC_TEST          = "test";
     constexpr const char* TOPIC_AUDIO         = "audio";
