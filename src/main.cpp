@@ -92,6 +92,12 @@ static void captureTask(void*);
 // Consumer of audioReadyQ / producer of audioFreeQ.
 static void mqttTask(void*);
 
+// ── Glove BLE task (Core 1) ───────────────────────────────────────────────────
+//
+// Owns the glove BLE client lifecycle entirely. Runs independently so a missing
+// or slow-to-connect glove never blocks the main loop or audio pipeline.
+static void gloveTask(void*);
+
 // ── Helper forward declaration ─────────────────────────────────────────────────
 void pollHall();
 
@@ -128,13 +134,13 @@ void setup()
   mqtt_client.connect(config::wifi::SSID, config::wifi::PASSWORD);
   mqtt_client.subscribe(config::mqtt::TOPIC_ACK, onMqttMessage);
 
-  glove_ble.begin();
-
   // Setup Multithreading
   // Core 0: capture (priority 2 — preempts MQTT so I2S DMA is never starved)
   //         mqtt    (priority 1)
+  // Core 1: glove   (priority 1 — BLE connect/reconnect, never blocks main loop)
   xTaskCreatePinnedToCore(captureTask, "capture", 4096, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(mqttTask,    "mqtt",    8192, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(gloveTask,   "glove",   4096, nullptr, 1, nullptr, 1);
 
   DEBUG_PRINTLN("Ready. Press button to record.");
 }
@@ -146,8 +152,6 @@ void loop()
 
   if (button.shouldRead(now)) button.read();
   if (hall.shouldRead(now))   pollHall();
-
-  glove_ble.loop();
 
   switch (state.load())
   {
@@ -312,6 +316,16 @@ static void captureTask(void*)
       captureIdle.store(true);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
+  }
+}
+
+static void gloveTask(void*)
+{
+  glove_ble.begin();
+  for (;;)
+  {
+    glove_ble.loop();
+    vTaskDelay(pdMS_TO_TICKS(config::ble::PUBLISH_INTERVAL_MS));
   }
 }
 
