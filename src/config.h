@@ -27,9 +27,9 @@ namespace config
   }
 
   namespace mic {
-    constexpr int WS_PIN            = 17;
-    constexpr int SCK_PIN           = 14;
-    constexpr int SD_PIN            = 16;
+    constexpr int WS_PIN            = D2;
+    constexpr int SCK_PIN           = D8;
+    constexpr int SD_PIN            = D3;
     constexpr int SAMPLE_RATE       = 8000;
     constexpr int SAMPLE_BATCH_SIZE = 250;  // 250 int16 = 500 bytes = one BLE notify per read
     constexpr int DMA_BUFFER_COUNT  = 4;
@@ -38,7 +38,7 @@ namespace config
 
   namespace button {
     constexpr int PIN               = D4;
-    constexpr int GREEN_LED_PIN     = 4;
+    constexpr int GREEN_LED_PIN     = D7;
     constexpr int RED_LED_PIN       = D9; 
     constexpr int INTERVAL_MS       = 33;
     constexpr int DURATION_MS       = 2000;
