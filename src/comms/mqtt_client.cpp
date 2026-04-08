@@ -147,6 +147,12 @@ void MqttClient::connectWifi(const char* ssid, const char* password)
 
   DEBUG_PRINTLN();
   DEBUG_PRINTF("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  if (!MDNS.begin("bar")) {
+    DEBUG_PRINTLN("mDNS init failed");
+  } else {
+    DEBUG_PRINTLN("mDNS started — .local names resolvable");
+  }
 }
 
 bool MqttClient::connectMqtt()

@@ -80,12 +80,12 @@ namespace config
   
 
   namespace wifi {
-    constexpr const char* SSID     = "IphoneAlam";
-    constexpr const char* PASSWORD = "pasuhagu";
+    constexpr const char* SSID     = "Medea";
+    constexpr const char* PASSWORD = "12345678";
   }
 
   namespace mqtt {
-    constexpr const char* BROKER              = "172.20.10.2";
+    constexpr const char* BROKER              = "bARtender.local";
     constexpr int         PORT                = 8885;
     constexpr const char* USERNAME            = "test";
     constexpr const char* PASSWORD            = "test";
