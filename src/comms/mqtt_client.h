@@ -2,7 +2,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+#include <ESPmDNS.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -30,9 +31,15 @@ public:
 private:
   void connectWifi(const char* ssid, const char* password);
   bool connectMqtt();
+  void loadCerts();
 
-  WiFiClient wifiClient;
-  PubSubClient mqttClient;
+  WiFiClientSecure wifiClient;
+  PubSubClient     mqttClient;
+
+  // Cert strings must outlive the TLS connection — setCACert() etc. store pointers, not copies
+  String caCert;
+  String clientCert;
+  String clientKey;
 
   const char* broker;
   int port;

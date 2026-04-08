@@ -80,17 +80,21 @@ namespace config
   
 
   namespace wifi {
-    constexpr const char* SSID     = "Home-S";
-    constexpr const char* PASSWORD = "selvan555";
+    constexpr const char* SSID     = "Medea";
+    constexpr const char* PASSWORD = "12345678";
   }
 
   namespace mqtt {
-    constexpr const char* BROKER              = "192.168.1.113";
-    constexpr int         PORT                = 1883;
+    constexpr const char* BROKER              = "bARtender.local";
+    constexpr int         PORT                = 8885;
     constexpr const char* USERNAME            = "test";
     constexpr const char* PASSWORD            = "test";
     constexpr const char* CLIENT_ID           = "bar";
     constexpr int         PUBLISH_INTERVAL_MS = 2000;
+
+    constexpr const char* CERT_CA             = "/ca.crt";
+    constexpr const char* CERT_CLIENT        = "/bar.crt";
+    constexpr const char* CERT_KEY           = "/bar.key";
 
     constexpr const char* TOPIC_TEST          = "test";
     constexpr const char* TOPIC_AUDIO         = "audio";

@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "../config.h"
+#include <SPIFFS.h>
 
 // Internal trampoline: PubSubClient delivers (topic, payload, length) as raw bytes
 static MqttMessageCallback s_userCallback = nullptr;
@@ -28,8 +29,39 @@ MqttClient::MqttClient(const char* broker, int port, const char* clientId, unsig
   mqttClient.setCallback(pubsubCallback);
 }
 
+void MqttClient::loadCerts()
+{
+  if (!SPIFFS.begin(true))
+  {
+    DEBUG_PRINTLN("SPIFFS mount failed — halting");
+    while (true) delay(1000);
+  }
+
+  auto readFile = [this](const char* path, String& out) {
+    File f = SPIFFS.open(path, "r");
+    if (!f)
+    {
+      DEBUG_PRINTF("Missing cert file: %s — halting\n", path);
+      while (true) delay(1000);
+    }
+    out = f.readString();
+    f.close();
+  };
+
+  readFile(config::mqtt::CERT_CA,     caCert);
+  readFile(config::mqtt::CERT_CLIENT, clientCert);
+  readFile(config::mqtt::CERT_KEY,    clientKey);
+
+  wifiClient.setCACert(caCert.c_str());
+  wifiClient.setCertificate(clientCert.c_str());
+  wifiClient.setPrivateKey(clientKey.c_str());
+
+  DEBUG_PRINTLN("mTLS certs loaded from SPIFFS");
+}
+
 bool MqttClient::connect(const char* ssid, const char* password)
 {
+  loadCerts();
   connectWifi(ssid, password);
   return connectMqtt();
 }
@@ -115,6 +147,12 @@ void MqttClient::connectWifi(const char* ssid, const char* password)
 
   DEBUG_PRINTLN();
   DEBUG_PRINTF("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  if (!MDNS.begin("bar")) {
+    DEBUG_PRINTLN("mDNS init failed");
+  } else {
+    DEBUG_PRINTLN("mDNS started — .local names resolvable");
+  }
 }
 
 bool MqttClient::connectMqtt()
