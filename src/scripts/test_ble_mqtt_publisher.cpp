@@ -2,9 +2,9 @@
 #include "../config.h"
 #include "../comms/ble_server.h"
 
-static BleServer      ble;
+static BleServer      ble(config::ble::GLOVE_DEVICE_NAME);
 static unsigned long  lastBleMs = 0;
-static uint32_t       counter   = 0;
+static uint8_t        counter   = 0;
 
 void setup()
 {
@@ -22,14 +22,14 @@ void loop()
   {
     if (ble.isConnected())
     {
-      bool ok = ble.send("ping " + std::to_string(counter));
-      DEBUG_PRINTF("[%6lums] BLE send #%lu -> %s\n", now, counter, ok ? "OK" : "FAIL");
+      bool ok = ble.sendRaw(&counter, 1);
+      DEBUG_PRINTF("[%6lums] BLE send gesture %u -> %s\n", now, counter, ok ? "OK" : "FAIL");
+      counter = (counter + 1) % 5;
     }
     else
     {
       DEBUG_PRINTF("[%6lums] waiting for central\n", now);
     }
     lastBleMs = now;
-    counter++;
   }
 }

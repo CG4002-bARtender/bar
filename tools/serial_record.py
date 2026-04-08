@@ -1,37 +1,34 @@
 """
-serial_record.py — Laptop-side receiver for the serial_record firmware.
+test_record.py — Key-triggered laptop-side receiver for test_record firmware.
 
-Receives framed PCM audio over USB-serial, saves each recording as a .wav file
-in tools/recordings/, then sends a 1-byte ACK back to the device.
+Press any key to trigger one recording. The firmware records, streams PCM
+audio back over USB-serial, and this script saves it as a .wav file in
+tools/output/. Recordings are numbered sequentially: recording_1.wav, etc.
 
 Usage:
-    uv run python tools/serial_record.py --port COM3            (Windows)
-    uv run python tools/serial_record.py --port /dev/ttyUSB0   (Linux/macOS)
+    uv run python tools/test_record.py --port COM3            (Windows)
+    uv run python tools/test_record.py --port /dev/ttyUSB0   (Linux/macOS)
+
+Protocol (host → device):
+    1 byte: 0x01 = START
 
 Protocol (device → host):
     [0xAB][0xCD][TYPE:1][LEN:2LE][PAYLOAD:LEN]
     TYPE 0x01 = AUDIO_CHUNK   raw int16 PCM, little-endian
     TYPE 0x02 = REC_END       signals end of one recording
 
-Protocol (host → device):
+Protocol (host → device after REC_END):
     1 byte: 0x01 = ACK, 0x00 = NACK
 """
 
 import argparse
 import math
 import struct
+import sys
 import wave
 from pathlib import Path
 
 import serial
-
-# ── ML dataset configuration ──────────────────────────────────────────────────
-NUM_SAMPLES = 30
-
-CLASSES = [
-    "aviation", "godfather", "irishcoffee", "martini", "midorisour",
-    "oldfashioned", "scotchneat", "tuxedo", "vodkaneat", "whiskeyneat",
-]
 
 # ── Hardware / protocol configuration (must match firmware config.h) ──────────
 BAUD_RATE    = 921600
@@ -40,6 +37,7 @@ SAMPLE_WIDTH = 2        # int16 = 2 bytes
 CHANNELS     = 1
 GAIN         = 8        # amplification applied before saving
 
+CMD_START    = bytes([0x01])
 MAGIC        = bytes([0xAB, 0xCD])
 TYPE_CHUNK   = 0x01
 TYPE_REC_END = 0x02
@@ -47,7 +45,26 @@ TYPE_REC_END = 0x02
 ACK  = bytes([0x01])
 NACK = bytes([0x00])
 
-OUTPUT_DIR = Path(__file__).parent / "recordings"
+OUTPUT_DIR = Path(__file__).parent / "output"
+
+
+# ── Cross-platform single keypress ────────────────────────────────────────────
+
+def _wait_for_keypress() -> str:
+    """Block until a single key is pressed; return the key character."""
+    if sys.platform == "win32":
+        import msvcrt
+        return msvcrt.getch().decode(errors="replace")
+    else:
+        import termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            return sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
 
 # ── Serial helpers ─────────────────────────────────────────────────────────────
 
@@ -65,7 +82,6 @@ def read_packet(port: serial.Serial) -> tuple[int, bytes]:
     """Block until one complete framed packet is received.
     Returns (packet_type, payload_bytes).
     """
-    # Re-sync to magic bytes byte-by-byte
     window = bytearray(2)
     while True:
         window[0] = window[1]
@@ -78,6 +94,7 @@ def read_packet(port: serial.Serial) -> tuple[int, bytes]:
     pkt_len  = struct.unpack_from("<H", header, 1)[0]
     payload  = read_exact(port, pkt_len) if pkt_len > 0 else b""
     return pkt_type, payload
+
 
 # ── Recording helpers ──────────────────────────────────────────────────────────
 
@@ -107,6 +124,14 @@ def save_wav(pcm: bytes, path: Path) -> None:
         wf.writeframes(pcm)
 
 
+def next_recording_path(out_dir: Path) -> Path:
+    """Return output/recording_N.wav where N is the next unused number."""
+    n = 1
+    while (out_dir / f"recording_{n}.wav").exists():
+        n += 1
+    return out_dir / f"recording_{n}.wav"
+
+
 def print_stats(pcm: bytes) -> None:
     n       = len(pcm) // SAMPLE_WIDTH
     samples = struct.unpack(f"<{n}h", pcm)
@@ -114,10 +139,11 @@ def print_stats(pcm: bytes) -> None:
     dur     = len(pcm) / (SAMPLE_RATE * SAMPLE_WIDTH)
     print(f"  {dur:.2f}s  rms={rms:.1f}  min={min(samples)}  max={max(samples)}")
 
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="ESP32 ML dataset recorder")
+    parser = argparse.ArgumentParser(description="Key-triggered ESP32 recorder")
     parser.add_argument("--port", required=True, help="Serial port (e.g. COM3 or /dev/ttyUSB0)")
     parser.add_argument("--out",  default=str(OUTPUT_DIR), help="Output directory")
     args = parser.parse_args()
@@ -125,51 +151,46 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    total_classes  = len(CLASSES)
-    total_samples  = total_classes * NUM_SAMPLES
-
     print(f"Connecting to {args.port} @ {BAUD_RATE} baud...")
     with serial.Serial(args.port, BAUD_RATE, timeout=5) as port:
         print(f"Connected. Saving to {out_dir.resolve()}")
-        print(f"{total_classes} classes × {NUM_SAMPLES} samples = {total_samples} recordings\n")
+        print("Press any key to record. Ctrl+C to quit.\n")
 
-        for class_idx, class_name in enumerate(CLASSES):
-            # ── Prompt between classes ─────────────────────────────────────────
-            if class_idx == 0:
-                input(f"Ready to record '{class_name}' ({class_idx + 1}/{total_classes}). Press Enter to start...")
-            else:
-                input(f"\nNext class: '{class_name}' ({class_idx + 1}/{total_classes}). Press Enter to start...")
-            print()
+        while True:
+            path = next_recording_path(out_dir)
+            print(f"[{path.name}]  Press any key to start...", end="", flush=True)
 
-            for sample_num in range(1, NUM_SAMPLES + 1):
-                label = f"{class_name}{sample_num:02d}"
-                print(f"  [{label}]  {sample_num:02d}/{NUM_SAMPLES}", end="", flush=True)
+            try:
+                _wait_for_keypress()
+            except KeyboardInterrupt:
+                print("\nStopped.")
+                return
+
+            print(" recording...", end="", flush=True)
+
+            try:
+                port.write(CMD_START)
+                port.flush()
+
+                pcm = receive_recording(port)
+                print_stats(pcm)
 
                 try:
-                    pcm = receive_recording(port)
-                    print_stats(pcm)
+                    save_wav(apply_gain(pcm), path)
+                    port.write(ACK)
+                    port.flush()
+                    print(f"  → {path.name}  [ACK]")
+                except Exception as exc:
+                    port.write(NACK)
+                    port.flush()
+                    print(f"  [NACK] {exc}")
 
-                    try:
-                        path = out_dir / f"{label}.wav"
-                        save_wav(apply_gain(pcm), path)
-                        port.write(ACK)
-                        port.flush()
-                        print(f"    → {path.name}  [ACK]")
-                    except Exception as exc:
-                        port.write(NACK)
-                        port.flush()
-                        print(f"    [NACK] {exc}")
-
-                except EOFError:
-                    print("\nDevice disconnected.")
-                    return
-                except KeyboardInterrupt:
-                    print("\nStopped.")
-                    return
-
-            print(f"\n  '{class_name}' complete — {NUM_SAMPLES} samples saved.")
-
-        print(f"\nAll {total_classes} classes recorded. Dataset complete.")
+            except EOFError:
+                print("\nDevice disconnected.")
+                return
+            except KeyboardInterrupt:
+                print("\nStopped.")
+                return
 
 
 if __name__ == "__main__":

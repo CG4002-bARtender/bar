@@ -1,17 +1,20 @@
-// serial_record.cpp — Continuous mic→serial recorder.
+// test_record.cpp — Key-triggered mic→serial recorder.
 //
-// Streams raw PCM audio over USB-serial using a simple binary framing protocol,
-// then waits for a 1-byte ACK/NACK from the laptop.  Loops immediately after
-// the LED feedback completes.
+// Idles until it receives a 1-byte START command (0x01) from the laptop,
+// then streams raw PCM audio using the same binary framing as serial_record.
+// After sending REC_END it waits for a 1-byte ACK/NACK and drives the LED.
 //
-// Companion: tools/serial_record.py
+// Companion: tools/test_record.py
 //
-// Protocol (host receives):
+// Protocol (host → device):
+//   1 byte: 0x01 = START  (triggers one recording)
+//
+// Protocol (device → host):
 //   [0xAB][0xCD][TYPE:1][LEN:2LE][PAYLOAD:LEN]
 //   TYPE 0x01 = AUDIO_CHUNK   (PAYLOAD = raw int16 PCM, little-endian)
 //   TYPE 0x02 = REC_END       (LEN = 0, no payload)
 //
-// Protocol (host sends back):
+// Protocol (host → device after REC_END):
 //   1 byte: 0x01 = ACK, 0x00 = NACK
 
 #include <Arduino.h>
@@ -21,6 +24,7 @@
 
 // ── Protocol constants ─────────────────────────────────────────────────────────
 static constexpr uint32_t SERIAL_BAUD    = 921600;
+static constexpr uint8_t  CMD_START      = 0x01;
 static constexpr uint8_t  MAGIC_0        = 0xAB;
 static constexpr uint8_t  MAGIC_1        = 0xCD;
 static constexpr uint8_t  TYPE_CHUNK     = 0x01;
@@ -50,10 +54,19 @@ void setup()
   Serial.begin(SERIAL_BAUD);
   mic.setup();
   mic_led.setup();
+  mic_led.setIdle();
 }
 
 void loop()
 {
+  // ── Wait for START command ───────────────────────────────────────────────────
+  while (Serial.available() == 0)
+    delay(1);
+
+  const uint8_t cmd = (uint8_t)Serial.read();
+  if (cmd != CMD_START)
+    return;   // ignore unexpected bytes
+
   // ── Record ──────────────────────────────────────────────────────────────────
   mic.flush();   // clear any DMA backlog before starting
   mic_led.setRecording();
@@ -82,7 +95,7 @@ void loop()
     }
   }
 
-  // ── LED feedback, then immediately loop ─────────────────────────────────────
+  // ── LED feedback, then return to idle ───────────────────────────────────────
   const unsigned long now = millis();
   if (ack == 0x01)
     mic_led.setAckFlash(now);
@@ -91,4 +104,6 @@ void loop()
 
   while (!mic_led.update(millis()))
     delay(1);
+
+  mic_led.setIdle();
 }
